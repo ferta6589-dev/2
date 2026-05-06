@@ -58,13 +58,60 @@ roll, and resets the local orderbook.
 pytest -q
 ```
 
+## Weather strategy (parallel module)
+
+`polyarb` ships a second strategy targeting Polymarket's daily city-temperature
+events (e.g. "Highest temperature in NYC on May 7" with buckets `<60°F`,
+`60-65°F`, …, `>75°F`). It is gated behind `WEATHER_ENABLED=false` by default.
+
+End-to-end:
+
+1. `weather_markets.fetch_weather_events` discovers daily-temperature events on
+   Polymarket (all cities by default).
+2. `forecast.fetch_distribution` blends NWS + Open-Meteo into a Gaussian
+   forecast for the target date.
+3. `weather_strategy.select_window` chooses the contiguous 3-bucket window
+   with the highest combined probability mass.
+4. `weather_strategy.decide_entry` buys YES on each bucket at best ask, capped
+   by `WEATHER_CENTRAL_MAX_PRICE` / `WEATHER_WING_MAX_PRICE` and a per-event
+   budget (`WEATHER_PER_EVENT_BUDGET_USD`).
+5. On the day-of, `weather_main.monitoring_loop` polls the resolver station's
+   latest observation every `NWS_POLL_INTERVAL_S` (default 30 min) and
+   classifies each bucket as winner / competitor / loser
+   (`weather_strategy.classify_buckets`).
+6. Losers are unwound at best bid; winners are held to resolution.
+7. After `event.end_ts`, a `kind:"resolve"` row credits $1 × qty for the
+   winning bucket.
+
+Run:
+
+```sh
+# Synthetic feed (no network)
+python -m polyarb.main --strategy weather --demo
+
+# Live discovery against Polymarket (paper-only)
+WEATHER_ENABLED=true python -m polyarb.main --strategy weather
+
+# Both strategies at once with the dashboard
+WEATHER_ENABLED=true python -m polyarb.main --strategy both --web
+
+# Aggregate weather paper P&L
+python -m polyarb.pnl --prefix weather_trades
+```
+
+`--mode live` is a stub that raises `NotImplementedError`. Live execution will
+require `py-clob-client`, USDC/CTF allowance, and signing — deferred to v2.
+
 ## Out of scope (v1)
 
 - **Live execution** — the `Executor` interface is in place, but only
-  `PaperExecutor` is implemented. Wiring `py-clob-client` for real orders
-  requires a Polygon private key, USDC + CTF allowance setup, and a careful
-  retry/cancel policy.
+  `PaperExecutor` / `WeatherPaperExecutor` are implemented. Wiring
+  `py-clob-client` for real orders requires a Polygon private key,
+  USDC + CTF allowance setup, and a careful retry/cancel policy.
 - **Historical backtest** — Polymarket does not freely publish historical
   orderbook snapshots.
-- **Multi-level VWAP sizing** — current detector only sizes against the
+- **Multi-level VWAP sizing** — the crypto arb detector only sizes against the
   matched-min of top-of-book asks.
+- **Calibrated forecast σ** — the weather strategy uses a hand-coded σ table
+  (4/3/2 °F at 5/3/0 days). Historical NWS-vs-realised calibration is a v2
+  follow-up.

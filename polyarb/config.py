@@ -19,9 +19,35 @@ class Settings(BaseSettings):
     log_dir: Path = Path("./logs")
     discovery_interval_s: int = 15
 
+    weather_enabled: bool = False
+    weather_cities: list[str] = Field(default_factory=list)
+    weather_lookahead_days: int = 7
+    nws_user_agent: str = "polyarb (contact@example.com)"
+    nws_poll_interval_s: int = 1800
+    open_meteo_enabled: bool = True
+    open_meteo_host: str = "https://api.open-meteo.com"
+    nws_host: str = "https://api.weather.gov"
+    weather_discovery_interval_s: int = 600
+    weather_per_event_budget_usd: float = 30.0
+    weather_max_open_events: int = 8
+    weather_central_max_price: float = 0.40
+    weather_wing_max_price: float = 0.20
+    weather_min_window_prob: float = 0.55
+    weather_log_filename_prefix: str = "weather_trades"
+    weather_live_enabled: bool = False
+    polygon_private_key: str | None = None
+    polygon_proxy_address: str | None = None
+
     @field_validator("assets", mode="before")
     @classmethod
     def _split_csv(cls, v):
+        if isinstance(v, str):
+            return [s.strip().upper() for s in v.split(",") if s.strip()]
+        return v
+
+    @field_validator("weather_cities", mode="before")
+    @classmethod
+    def _split_cities_csv(cls, v):
         if isinstance(v, str):
             return [s.strip().upper() for s in v.split(",") if s.strip()]
         return v

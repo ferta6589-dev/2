@@ -1,17 +1,25 @@
 """Aggregate paper-trade PnL by reading the JSONL logs.
 
-Run as ``python -m polyarb.pnl`` to print a one-shot summary.
+Run as ``python -m polyarb.pnl`` for the crypto arb summary, or
+``python -m polyarb.pnl --prefix weather_trades`` for the weather strategy.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
 
 
-def summarize(log_dir: Path) -> dict:
-    files = sorted(log_dir.glob("paper_trades_*.jsonl"))
+def summarize(log_dir: Path, prefix: str = "paper_trades") -> dict:
+    files = sorted(log_dir.glob(f"{prefix}_2*.jsonl"))
+    if prefix == "paper_trades":
+        return _summarize_arb(files)
+    return _summarize_weather(files)
+
+
+def _summarize_arb(files: list[Path]) -> dict:
     n = 0
     total_profit = 0.0
     total_cost = 0.0
@@ -50,11 +58,66 @@ def summarize(log_dir: Path) -> dict:
     }
 
 
+def _summarize_weather(files: list[Path]) -> dict:
+    buys = 0
+    sells = 0
+    resolves = 0
+    total_buy_cost = 0.0
+    total_realized = 0.0
+    total_resolved = 0.0
+    by_event: dict[str, dict[str, float]] = {}
+
+    for f in files:
+        with f.open(encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                kind = rec.get("kind")
+                event = rec.get("event_slug", "?")
+                bucket = rec.get("bucket_slug", "?")
+                qty = float(rec.get("qty", 0))
+                price = float(rec.get("price", 0))
+                pnl = float(rec.get("realized_pnl", 0))
+                slot = by_event.setdefault(event, {"realized": 0.0, "cost": 0.0})
+                if kind == "buy":
+                    buys += 1
+                    total_buy_cost += qty * price
+                    slot["cost"] += qty * price
+                elif kind == "sell":
+                    sells += 1
+                    total_realized += pnl
+                    slot["realized"] += pnl
+                elif kind == "resolve":
+                    resolves += 1
+                    total_resolved += pnl
+                    slot["realized"] += pnl
+
+    grand_total = total_realized + total_resolved
+    return {
+        "buys": buys,
+        "sells": sells,
+        "resolves": resolves,
+        "events_traded": len(by_event),
+        "total_buy_cost_usd": round(total_buy_cost, 4),
+        "realized_from_sells_usd": round(total_realized, 4),
+        "realized_from_resolves_usd": round(total_resolved, 4),
+        "total_realized_usd": round(grand_total, 4),
+    }
+
+
 def main(argv: list[str]) -> int:
-    log_dir = Path(argv[1]) if len(argv) > 1 else Path("./logs")
-    summary = summarize(log_dir)
+    parser = argparse.ArgumentParser("polyarb.pnl")
+    parser.add_argument("log_dir", nargs="?", default="./logs")
+    parser.add_argument("--prefix", default="paper_trades")
+    args = parser.parse_args(argv[1:])
+    summary = summarize(Path(args.log_dir), prefix=args.prefix)
     for k, v in summary.items():
-        print(f"{k:>20s}: {v}")
+        print(f"{k:>28s}: {v}")
     return 0
 
 

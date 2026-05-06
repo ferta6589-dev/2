@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 
 from .state import AppState
+from .weather_state import WeatherAppState
 
 log = structlog.get_logger("polyarb.web")
 
@@ -161,7 +162,7 @@ setInterval(tick, 1000);
 """
 
 
-def make_app(state: AppState) -> FastAPI:
+def make_app(state: AppState, weather_state: WeatherAppState | None = None) -> FastAPI:
     app = FastAPI(title="polyarb")
 
     @app.get("/", response_class=HTMLResponse)
@@ -172,6 +173,12 @@ def make_app(state: AppState) -> FastAPI:
     def state_json():
         return JSONResponse(state.snapshot())
 
+    @app.get("/weather/state.json")
+    def weather_state_json():
+        if weather_state is None:
+            return JSONResponse({"enabled": False, "events": []})
+        return JSONResponse({"enabled": True, **weather_state.snapshot()})
+
     @app.get("/healthz")
     def healthz():
         return {"ok": True, "mode": state.mode, "tick": state.tick}
@@ -179,8 +186,15 @@ def make_app(state: AppState) -> FastAPI:
     return app
 
 
-async def serve(state: AppState, host: str, port: int, stop: asyncio.Event) -> None:
-    app = make_app(state)
+async def serve(
+    state: AppState,
+    host: str,
+    port: int,
+    stop: asyncio.Event,
+    *,
+    weather_state: WeatherAppState | None = None,
+) -> None:
+    app = make_app(state, weather_state=weather_state)
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
     serve_task = asyncio.create_task(server.serve())
