@@ -21,11 +21,12 @@ class Executor(Protocol):
 class PaperExecutor:
     """Logs would-be arbitrage trades as JSONL — no on-chain activity."""
 
-    def __init__(self, log_dir: Path):
+    def __init__(self, log_dir: Path, state=None):
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._fp = None
         self._fp_date: str | None = None
+        self.state = state
 
     def _file_for_today(self):
         date = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -38,10 +39,13 @@ class PaperExecutor:
         return self._fp
 
     def fill(self, opp: Opportunity) -> None:
-        record = {"ts": time.time(), **asdict(opp)}
+        ts = time.time()
+        record = {"ts": ts, **asdict(opp)}
         fp = self._file_for_today()
         fp.write(json.dumps(record, separators=(",", ":")) + "\n")
         fp.flush()
+        if self.state is not None:
+            self.state.record_opportunity(opp, ts)
         log.info(
             "paper_arb",
             slug=opp.slug,

@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import logging
 import signal
-import time
 
 import httpx
 import structlog
@@ -13,6 +12,9 @@ from . import arb, clob_ws, markets
 from .config import Settings, load
 from .executor import PaperExecutor
 from .orderbook import OrderBook
+from .sim import run_demo
+from .state import AppState
+from .web import serve as serve_web
 
 
 def _setup_logging():
@@ -29,16 +31,7 @@ def _setup_logging():
 log = structlog.get_logger("polyarb")
 
 
-class BotState:
-    def __init__(self) -> None:
-        self.market: markets.Market | None = None
-        self.yes_book: OrderBook | None = None
-        self.no_book: OrderBook | None = None
-        self.subscribe_sig: tuple[str, str] | None = None  # (yes_id, no_id)
-        self.swap_event = asyncio.Event()
-
-
-def _apply_event(state: BotState, ev: dict) -> bool:
+def _apply_event(state: AppState, ev: dict) -> bool:
     """Update local books from a CLOB WS event. Returns True if either book changed."""
     if state.market is None or state.yes_book is None or state.no_book is None:
         return False
@@ -73,7 +66,7 @@ def _apply_event(state: BotState, ev: dict) -> bool:
     return False
 
 
-async def discovery_loop(state: BotState, settings: Settings, http: httpx.AsyncClient, stop: asyncio.Event):
+async def discovery_loop(state: AppState, settings: Settings, http: httpx.AsyncClient, stop: asyncio.Event):
     """Poll Gamma for the active 5m window; swap subscription when it rolls."""
     while not stop.is_set():
         try:
@@ -99,7 +92,7 @@ async def discovery_loop(state: BotState, settings: Settings, http: httpx.AsyncC
             pass
 
 
-async def ws_loop(state: BotState, settings: Settings, executor: PaperExecutor, stop: asyncio.Event):
+async def ws_loop(state: AppState, settings: Settings, executor: PaperExecutor, stop: asyncio.Event):
     """One WS subscription at a time, restarted on each market swap."""
     while not stop.is_set():
         if state.subscribe_sig is None:
@@ -141,7 +134,7 @@ async def ws_loop(state: BotState, settings: Settings, executor: PaperExecutor, 
                 pass
 
 
-def _check_arb(state: BotState, settings: Settings, executor: PaperExecutor) -> None:
+def _check_arb(state: AppState, settings: Settings, executor: PaperExecutor) -> None:
     if state.market is None or state.yes_book is None or state.no_book is None:
         return
     settle_in = state.market.time_to_settle()
@@ -188,7 +181,7 @@ async def run_once(settings: Settings) -> int:
         return 0
 
 
-async def run(settings: Settings) -> int:
+async def run(settings: Settings, *, demo: bool, web_host: str | None, web_port: int) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -197,13 +190,25 @@ async def run(settings: Settings) -> int:
         except NotImplementedError:
             pass
 
-    state = BotState()
-    executor = PaperExecutor(settings.log_dir)
-    async with httpx.AsyncClient() as http:
-        await asyncio.gather(
-            discovery_loop(state, settings, http, stop),
-            ws_loop(state, settings, executor, stop),
-        )
+    state = AppState()
+    state.mode = "demo" if demo else "live"
+    executor = PaperExecutor(settings.log_dir, state=state)
+
+    coros: list = []
+    if web_host is not None:
+        coros.append(serve_web(state, web_host, web_port, stop))
+
+    if demo:
+        coros.append(run_demo(state, settings, executor, stop))
+        await asyncio.gather(*coros)
+    else:
+        async with httpx.AsyncClient() as http:
+            coros.extend([
+                discovery_loop(state, settings, http, stop),
+                ws_loop(state, settings, executor, stop),
+            ])
+            await asyncio.gather(*coros)
+
     executor.close()
     return 0
 
@@ -212,10 +217,16 @@ def cli():
     _setup_logging()
     parser = argparse.ArgumentParser("polyarb")
     parser.add_argument("--once", action="store_true", help="Diagnostic: print top of book and exit")
+    parser.add_argument("--demo", action="store_true", help="Run with a synthetic in-process feed (no Polymarket connection)")
+    parser.add_argument("--web", action="store_true", help="Serve the dashboard on http://HOST:PORT")
+    parser.add_argument("--web-host", default="127.0.0.1")
+    parser.add_argument("--web-port", type=int, default=8765)
     args = parser.parse_args()
     settings = load()
-    coro = run_once(settings) if args.once else run(settings)
-    raise SystemExit(asyncio.run(coro))
+    if args.once:
+        raise SystemExit(asyncio.run(run_once(settings)))
+    web_host = args.web_host if args.web else None
+    raise SystemExit(asyncio.run(run(settings, demo=args.demo, web_host=web_host, web_port=args.web_port)))
 
 
 if __name__ == "__main__":
