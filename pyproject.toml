@@ -1,0 +1,33 @@
+[project]
+name = "polyarb"
+version = "0.1.0"
+description = "Paper-trading arbitrage bot for Polymarket 5-minute crypto markets"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=12,<14",
+    "httpx>=0.27,<1",
+    "pydantic-settings>=2.5,<3",
+    "structlog>=24,<26",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+
+[project.scripts]
+polyarb = "polyarb.main:cli"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["polyarb*"]
+exclude = ["tests*", "logs*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
