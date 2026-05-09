@@ -9,3 +9,5 @@ logs/*.jsonl
 .ruff_cache/
 dist/
 build/
+research/btc_1m_full.parquet
+research/__pycache__/
