@@ -1,0 +1,73 @@
+strategy,windows,pass_%,fail_dd_%,fail_target_%,median_pnl_%,median_dd_%,avg_trades,rule,sizing
+4h_DualMom_30_90,340,6.2,0.9,92.9,0.76,-2.06,12.7,HyroTrader 25k 1-step,Conservative_0.5pct_lev3
+4h_EMA200_filter,340,9.1,5.6,85.3,0.0,-2.56,12.6,HyroTrader 25k 1-step,Conservative_0.5pct_lev3
+4h_Supertrend_LO,340,5.9,5.3,88.8,0.92,-2.52,11.3,HyroTrader 25k 1-step,Conservative_0.5pct_lev3
+1h_OR_Breakout_LO,340,11.2,24.1,64.7,1.48,-4.22,35.4,HyroTrader 25k 1-step,Conservative_0.5pct_lev3
+1h_VolFilt_Donchian,340,9.4,26.5,64.1,-0.08,-4.65,29.5,HyroTrader 25k 1-step,Conservative_0.5pct_lev3
+1h_Session_US,340,25.0,43.8,31.2,-0.31,-5.26,40.9,HyroTrader 25k 1-step,Conservative_0.5pct_lev3
+4h_DualMom_30_90,340,27.9,13.5,58.5,1.4,-3.72,9.7,HyroTrader 25k 1-step,Moderate_1pct_lev5
+4h_EMA200_filter,340,27.9,29.1,42.9,-0.21,-4.34,8.8,HyroTrader 25k 1-step,Moderate_1pct_lev5
+4h_Supertrend_LO,340,27.4,27.1,45.6,1.02,-4.4,8.3,HyroTrader 25k 1-step,Moderate_1pct_lev5
+1h_OR_Breakout_LO,340,33.8,47.4,18.8,-0.94,-5.21,20.3,HyroTrader 25k 1-step,Moderate_1pct_lev5
+1h_VolFilt_Donchian,340,34.1,47.6,18.2,-2.27,-5.8,16.1,HyroTrader 25k 1-step,Moderate_1pct_lev5
+1h_Session_US,340,38.5,59.7,1.8,-4.31,-5.52,16.1,HyroTrader 25k 1-step,Moderate_1pct_lev5
+4h_DualMom_30_90,340,36.5,41.5,22.1,-0.16,-4.77,5.3,HyroTrader 25k 1-step,Aggressive_2pct_lev10
+4h_EMA200_filter,340,37.9,44.4,17.6,-1.18,-5.34,5.0,HyroTrader 25k 1-step,Aggressive_2pct_lev10
+4h_Supertrend_LO,340,43.5,42.6,13.8,-0.14,-5.64,4.6,HyroTrader 25k 1-step,Aggressive_2pct_lev10
+1h_OR_Breakout_LO,340,40.9,58.2,0.9,-4.34,-5.7,7.5,HyroTrader 25k 1-step,Aggressive_2pct_lev10
+1h_VolFilt_Donchian,340,42.9,56.5,0.6,-4.38,-6.17,6.2,HyroTrader 25k 1-step,Aggressive_2pct_lev10
+1h_Session_US,340,37.6,62.4,0.0,-4.46,-6.09,5.9,HyroTrader 25k 1-step,Aggressive_2pct_lev10
+4h_DualMom_30_90,340,11.5,0.0,88.5,0.76,-2.01,12.2,FundedNext Crypto 2-step P1,Conservative_0.5pct_lev3
+4h_EMA200_filter,340,15.0,0.0,85.0,0.0,-2.49,12.3,FundedNext Crypto 2-step P1,Conservative_0.5pct_lev3
+4h_Supertrend_LO,340,12.1,0.3,87.6,0.92,-2.44,11.0,FundedNext Crypto 2-step P1,Conservative_0.5pct_lev3
+1h_OR_Breakout_LO,340,16.5,5.0,78.5,1.64,-4.16,38.1,FundedNext Crypto 2-step P1,Conservative_0.5pct_lev3
+1h_VolFilt_Donchian,340,18.5,8.2,73.2,0.36,-4.89,31.9,FundedNext Crypto 2-step P1,Conservative_0.5pct_lev3
+1h_Session_US,340,37.4,20.9,41.8,3.01,-6.12,49.2,FundedNext Crypto 2-step P1,Conservative_0.5pct_lev3
+4h_DualMom_30_90,340,34.7,1.8,63.5,1.5,-3.42,9.6,FundedNext Crypto 2-step P1,Moderate_1pct_lev5
+4h_EMA200_filter,340,36.2,11.8,52.1,0.02,-3.99,9.0,FundedNext Crypto 2-step P1,Moderate_1pct_lev5
+4h_Supertrend_LO,340,35.6,7.9,56.5,1.88,-4.23,8.4,FundedNext Crypto 2-step P1,Moderate_1pct_lev5
+1h_OR_Breakout_LO,340,48.5,28.5,22.9,6.01,-6.33,22.5,FundedNext Crypto 2-step P1,Moderate_1pct_lev5
+1h_VolFilt_Donchian,340,44.4,29.1,26.5,2.23,-7.16,17.6,FundedNext Crypto 2-step P1,Moderate_1pct_lev5
+1h_Session_US,340,56.5,41.8,1.8,8.14,-7.38,20.6,FundedNext Crypto 2-step P1,Moderate_1pct_lev5
+4h_DualMom_30_90,340,46.5,18.8,34.7,3.58,-5.0,6.2,FundedNext Crypto 2-step P1,Aggressive_2pct_lev10
+4h_EMA200_filter,340,46.5,32.4,21.2,0.05,-5.18,5.3,FundedNext Crypto 2-step P1,Aggressive_2pct_lev10
+4h_Supertrend_LO,340,50.9,32.1,17.1,8.07,-5.84,4.6,FundedNext Crypto 2-step P1,Aggressive_2pct_lev10
+1h_OR_Breakout_LO,340,57.4,41.2,1.5,8.13,-7.6,9.4,FundedNext Crypto 2-step P1,Aggressive_2pct_lev10
+1h_VolFilt_Donchian,340,55.3,43.8,0.9,8.08,-7.7,7.2,FundedNext Crypto 2-step P1,Aggressive_2pct_lev10
+1h_Session_US,340,51.2,48.8,0.0,8.02,-7.78,6.8,FundedNext Crypto 2-step P1,Aggressive_2pct_lev10
+4h_DualMom_30_90,340,11.5,1.8,86.8,0.76,-2.01,12.1,Apex-style strict,Conservative_0.5pct_lev3
+4h_EMA200_filter,340,14.7,12.4,72.9,0.0,-2.49,11.7,Apex-style strict,Conservative_0.5pct_lev3
+4h_Supertrend_LO,340,12.1,7.9,80.0,0.92,-2.44,10.7,Apex-style strict,Conservative_0.5pct_lev3
+1h_OR_Breakout_LO,340,15.9,31.5,52.6,1.18,-3.8,31.7,Apex-style strict,Conservative_0.5pct_lev3
+1h_VolFilt_Donchian,340,16.5,32.4,51.2,-0.28,-4.14,26.1,Apex-style strict,Conservative_0.5pct_lev3
+1h_Session_US,340,32.6,50.3,17.1,-3.5,-4.54,33.3,Apex-style strict,Conservative_0.5pct_lev3
+4h_DualMom_30_90,340,32.6,19.1,48.2,1.31,-3.25,8.3,Apex-style strict,Moderate_1pct_lev5
+4h_EMA200_filter,340,34.1,34.4,31.5,-0.12,-3.84,7.2,Apex-style strict,Moderate_1pct_lev5
+4h_Supertrend_LO,340,35.3,32.1,32.6,1.03,-3.74,6.7,Apex-style strict,Moderate_1pct_lev5
+1h_OR_Breakout_LO,340,42.6,48.8,8.5,-1.73,-4.36,15.3,Apex-style strict,Moderate_1pct_lev5
+1h_VolFilt_Donchian,340,42.9,48.2,8.8,-1.58,-4.65,11.8,Apex-style strict,Moderate_1pct_lev5
+1h_Session_US,340,40.9,59.1,0.0,-3.74,-4.52,11.2,Apex-style strict,Moderate_1pct_lev5
+4h_DualMom_30_90,340,45.6,30.9,23.5,3.56,-3.81,4.6,Apex-style strict,Aggressive_2pct_lev10
+4h_EMA200_filter,340,42.9,38.8,18.2,0.0,-4.0,3.7,Apex-style strict,Aggressive_2pct_lev10
+4h_Supertrend_LO,340,50.0,37.1,12.9,8.03,-3.98,3.2,Apex-style strict,Aggressive_2pct_lev10
+1h_OR_Breakout_LO,340,48.2,51.5,0.3,-3.55,-4.36,6.1,Apex-style strict,Aggressive_2pct_lev10
+1h_VolFilt_Donchian,340,48.2,50.6,1.2,-3.52,-4.42,4.4,Apex-style strict,Aggressive_2pct_lev10
+1h_Session_US,340,47.4,52.6,0.0,-3.96,-4.52,4.3,Apex-style strict,Aggressive_2pct_lev10
+4h_DualMom_30_90,340,6.2,0.0,93.8,0.76,-2.06,12.7,BFG-style lenient,Conservative_0.5pct_lev3
+4h_EMA200_filter,340,9.1,0.0,90.9,0.0,-2.56,13.0,BFG-style lenient,Conservative_0.5pct_lev3
+4h_Supertrend_LO,340,5.9,0.3,93.8,0.92,-2.52,11.4,BFG-style lenient,Conservative_0.5pct_lev3
+1h_OR_Breakout_LO,340,11.2,5.0,83.8,1.64,-4.22,39.7,BFG-style lenient,Conservative_0.5pct_lev3
+1h_VolFilt_Donchian,340,9.4,8.2,82.4,0.36,-4.97,33.8,BFG-style lenient,Conservative_0.5pct_lev3
+1h_Session_US,340,25.9,20.9,53.2,2.68,-6.5,53.5,BFG-style lenient,Conservative_0.5pct_lev3
+4h_DualMom_30_90,340,27.9,1.8,70.3,1.5,-3.72,10.4,BFG-style lenient,Moderate_1pct_lev5
+4h_EMA200_filter,340,28.8,11.8,59.4,0.0,-4.38,10.1,BFG-style lenient,Moderate_1pct_lev5
+4h_Supertrend_LO,340,27.4,7.9,64.7,1.78,-4.4,9.2,BFG-style lenient,Moderate_1pct_lev5
+1h_OR_Breakout_LO,340,37.6,29.1,33.2,3.97,-6.94,26.1,BFG-style lenient,Moderate_1pct_lev5
+1h_VolFilt_Donchian,340,37.4,29.1,33.5,0.61,-7.38,20.1,BFG-style lenient,Moderate_1pct_lev5
+1h_Session_US,340,50.0,45.3,4.7,9.46,-7.78,24.6,BFG-style lenient,Moderate_1pct_lev5
+4h_DualMom_30_90,340,42.9,18.8,38.2,2.9,-5.38,6.8,BFG-style lenient,Aggressive_2pct_lev10
+4h_EMA200_filter,340,41.2,32.9,25.9,0.0,-6.42,6.1,BFG-style lenient,Aggressive_2pct_lev10
+4h_Supertrend_LO,340,47.4,32.4,20.3,3.63,-6.36,5.4,BFG-style lenient,Aggressive_2pct_lev10
+1h_OR_Breakout_LO,340,53.8,43.2,2.9,10.17,-7.89,11.0,BFG-style lenient,Aggressive_2pct_lev10
+1h_VolFilt_Donchian,340,52.4,45.0,2.6,10.07,-8.09,8.6,BFG-style lenient,Aggressive_2pct_lev10
+1h_Session_US,340,47.4,52.6,0.0,-7.08,-8.07,8.2,BFG-style lenient,Aggressive_2pct_lev10
