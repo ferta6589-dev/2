@@ -82,30 +82,35 @@ def _drift_books(state: WeatherAppState, event: WeatherEvent, observed_c: float)
             book.replace([(0.02, 200.0)], [(0.05, 200.0)], ts_ms)
 
 
-async def run_demo(
+_TIMELINE_HOURS = [
+    (5, 8.5), (7, 10.0), (8, 12.3), (10, 14.8),
+    (12, 16.2), (13, 17.4), (14, 18.1), (15, 18.6),
+    (16, 18.8), (17, 18.3), (18, 17.0), (20, 14.5),
+]
+
+
+async def _play_one_day(
     state: WeatherAppState,
     settings: Settings,
     executor: WeatherPaperExecutor,
     stop: asyncio.Event,
     *,
-    tick_period_s: float = 0.3,
+    tick_period_s: float,
+    day_offset: int,
 ) -> None:
-    """One full sim day on Moscow / UUWW."""
-    state.mode = "demo"
     event = _build_moscow_event()
+    if day_offset:
+        new_slug = f"{event.event_slug}-d{day_offset}"
+        event.event_slug = new_slug
     _seed_books(state, event)
     tracker = DailyMaxTracker(target_date=event.target_date)
     state.add_event(event, tracker)
 
     base = datetime.combine(event.target_date, datetime.min.time(), tzinfo=timezone.utc)
-    timeline = [
-        (5, 8.5), (7, 10.0), (8, 12.3), (10, 14.8),
-        (12, 16.2), (13, 17.4), (14, 18.1), (15, 18.6),
-        (16, 18.8), (17, 18.3), (18, 17.0), (20, 14.5),
-    ]
+
     from .weather_strategy import classify_buckets, decide_entry, decide_exits
 
-    for hour, temp_c in timeline:
+    for hour, temp_c in _TIMELINE_HOURS:
         if stop.is_set():
             return
         state.tick += 1
@@ -114,11 +119,15 @@ async def run_demo(
             station_id="UUWW",
             observation_ts=observation_ts,
             temperature_c=temp_c,
-            raw=f"UUWW {observation_ts.strftime('%d%H%M')}Z DEMO",
+            raw=(
+                f"UUWW {observation_ts.strftime('%d%H%M')}Z 19006MPS 9999 "
+                f"SCT040 {int(temp_c):02d}/08 Q1015 NOSIG"
+            ),
             source="sim",
         )
         tracker.update(report)
         state.last_metar["UUWW"] = report
+        state.metar_poll_count["UUWW"] = state.metar_poll_count.get("UUWW", 0) + 1
         _drift_books(state, event, tracker.max_c or 0.0)
 
         verdicts = classify_buckets(event.buckets, observed_max_c=tracker.max_c)
@@ -164,3 +173,30 @@ async def run_demo(
             continue
         payout = 1.0 if b.contains_rounded(rounded) else 0.0
         await executor.record_resolve(pos, payout_per_share=payout)
+
+
+async def run_demo(
+    state: WeatherAppState,
+    settings: Settings,
+    executor: WeatherPaperExecutor,
+    stop: asyncio.Event,
+    *,
+    tick_period_s: float = 0.3,
+    loop_forever: bool = False,
+) -> None:
+    """One Moscow/UUWW day; with ``loop_forever`` keeps rolling fresh days so
+    the dashboard has live activity to render."""
+    state.mode = "demo"
+    day = 0
+    while not stop.is_set():
+        await _play_one_day(
+            state, settings, executor, stop,
+            tick_period_s=tick_period_s, day_offset=day,
+        )
+        if not loop_forever or stop.is_set():
+            break
+        day += 1
+        # Retire the closed event so the next iteration starts clean.
+        old_slug = next(iter(state.events))
+        from .weather_main import _retire_event
+        _retire_event(state, old_slug)

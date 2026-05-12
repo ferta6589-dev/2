@@ -234,7 +234,10 @@ async def run(
             if strategy in ("crypto", "both"):
                 coros.append(run_demo(state, settings, executor, stop))
             if strategy in ("weather", "both") and weather_state is not None and weather_executor is not None:
-                coros.append(weather_run_demo(weather_state, settings, weather_executor, stop))
+                coros.append(weather_run_demo(
+                    weather_state, settings, weather_executor, stop,
+                    tick_period_s=2.5, loop_forever=True,
+                ))
             await asyncio.gather(*coros)
         else:
             async with httpx.AsyncClient() as http:

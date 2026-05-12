@@ -162,6 +162,222 @@ setInterval(tick, 1000);
 """
 
 
+MOSCOW_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>polyarb · Moscow METAR (UUWW)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px; }
+  h1 { margin: 0 0 4px 0; font-size: 18px; }
+  .sub { color: #8b949e; font-size: 12px; margin-bottom: 18px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+          padding: 14px 16px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px 0; color: #58a6ff; font-weight: 600;
+             text-transform: uppercase; letter-spacing: 0.5px; }
+  .row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0;
+         border-bottom: 1px dashed #21262d; font-size: 13px; }
+  .row:last-child { border-bottom: 0; }
+  .k { color: #8b949e; }
+  .v { font-variant-numeric: tabular-nums; }
+  .v.good { color: #3fb950; }
+  .v.warn { color: #f0883e; }
+  .v.bad  { color: #f85149; }
+  .v.big  { font-size: 28px; font-weight: 600; }
+  pre.metar { background: #010409; border: 1px solid #21262d; border-radius: 6px;
+              padding: 10px; font-size: 12px; color: #79c0ff; white-space: pre-wrap;
+              word-break: break-all; margin: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+  th, td { padding: 5px 8px; border-bottom: 1px solid #21262d; text-align: right;
+           font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: #8b949e; font-weight: 500; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px;
+          background: #21262d; color: #c9d1d9; font-size: 11px; margin-left: 6px; }
+  .pill.leader { background: #1f6feb33; color: #58a6ff; }
+  .pill.exceeded { background: #f8514933; color: #f85149; }
+  .pill.unreached { background: #30363d; color: #8b949e; }
+  .empty { color: #6e7681; font-style: italic; padding: 12px 0; }
+</style>
+</head>
+<body>
+  <h1>🇷🇺 Moscow · UUWW (Vnukovo) — METAR live<span id="mode" class="pill">…</span></h1>
+  <div class="sub" id="sub">connecting…</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Latest METAR</h2>
+      <div id="metar"></div>
+      <pre class="metar" id="raw">—</pre>
+    </div>
+    <div class="card">
+      <h2>Running daily max</h2>
+      <div id="max"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top: 16px;">
+    <h2>Polymarket buckets (May 12, 2026)</h2>
+    <div id="buckets"></div>
+  </div>
+
+  <div class="card" style="margin-top: 16px;">
+    <h2>Recent bot actions</h2>
+    <div id="actions"></div>
+  </div>
+
+  <div class="card" style="margin-top: 16px;">
+    <h2>Bot totals (paper)</h2>
+    <div id="totals"></div>
+  </div>
+
+<script>
+function fmt(x, n=2) {
+  if (x === null || x === undefined) return "—";
+  return Number(x).toFixed(n);
+}
+function row(k, v, cls="") {
+  return `<div class="row"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+}
+function bigRow(k, v, cls="") {
+  return `<div class="row"><span class="k">${k}</span><span class="v big ${cls}">${v}</span></div>`;
+}
+async function tick() {
+  let r;
+  try { r = await fetch("/moscow.json", {cache: "no-store"}); }
+  catch { document.getElementById("sub").textContent = "disconnected"; return; }
+  const s = await r.json();
+
+  const modeEl = document.getElementById("mode");
+  modeEl.textContent = s.mode || "idle";
+  modeEl.className = "pill " + (s.mode || "idle");
+
+  document.getElementById("sub").textContent =
+    `polls=${s.metar_polls?.UUWW || 0} · refreshing every 1s · ${s.event ? s.event.event_slug : "no active event"}`;
+
+  if (s.metar) {
+    const tsLocal = new Date(s.metar.ts).toUTCString();
+    document.getElementById("metar").innerHTML =
+        row("temperature (°C)", fmt(s.metar.temperature_c, 1), "good")
+      + row("observation (UTC)", tsLocal)
+      + row("source", s.metar.source);
+    document.getElementById("raw").textContent = s.metar.raw;
+  } else {
+    document.getElementById("metar").innerHTML = `<div class="empty">no METAR ingested yet</div>`;
+    document.getElementById("raw").textContent = "—";
+  }
+
+  const tracker = s.event;
+  document.getElementById("max").innerHTML = tracker
+    ? bigRow("observed", fmt(tracker.observed_max_c, 1) + " °C", "good")
+      + row("rounded (resolver precision)", (tracker.rounded_max_c ?? "—") + " °C")
+      + row("settles in", fmt(tracker.settle_in_s, 0) + " s")
+    : `<div class="empty">no active event</div>`;
+
+  if (s.buckets && s.buckets.length) {
+    let h = `<table><thead><tr>
+        <th>bucket</th><th>verdict</th><th>best bid</th><th>best ask</th>
+        <th>qty</th><th>avg cost</th><th>realized $</th>
+      </tr></thead><tbody>`;
+    for (const b of s.buckets) {
+      const verdict = b.verdict || "—";
+      h += `<tr>
+        <td>${b.title}</td>
+        <td><span class="pill ${verdict}">${verdict}</span></td>
+        <td>${b.best_bid ? fmt(b.best_bid.price, 3) : "—"}</td>
+        <td>${b.best_ask ? fmt(b.best_ask.price, 3) : "—"}</td>
+        <td>${b.position ? fmt(b.position.qty, 1) : "—"}</td>
+        <td>${b.position ? fmt(b.position.avg_cost, 3) : "—"}</td>
+        <td class="v ${b.position && b.position.realized_pnl >= 0 ? 'good' : 'bad'}">
+          ${b.position ? fmt(b.position.realized_pnl, 3) : "—"}
+        </td>
+      </tr>`;
+    }
+    h += `</tbody></table>`;
+    document.getElementById("buckets").innerHTML = h;
+  } else {
+    document.getElementById("buckets").innerHTML =
+      `<div class="empty">no buckets yet — bot will subscribe when an event is discovered</div>`;
+  }
+
+  const actions = s.recent_actions || [];
+  if (actions.length) {
+    let h = `<table><thead><tr>
+      <th>time (UTC)</th><th>kind</th><th>bucket</th><th>qty</th>
+      <th>price</th><th>pnl</th><th>reason</th>
+    </tr></thead><tbody>`;
+    for (const a of actions.slice(0, 15)) {
+      const t = new Date((a.ts || 0) * 1000).toISOString().slice(11, 19);
+      h += `<tr>
+        <td>${t}</td>
+        <td>${a.kind}</td>
+        <td>${(a.bucket_slug || "").split("-").slice(-2).join("-")}</td>
+        <td>${fmt(a.qty, 1)}</td>
+        <td>${fmt(a.price, 3)}</td>
+        <td class="v ${(a.realized_pnl || 0) >= 0 ? 'good' : 'bad'}">
+          ${a.realized_pnl !== undefined ? fmt(a.realized_pnl, 3) : "—"}
+        </td>
+        <td>${a.reason || "—"}</td>
+      </tr>`;
+    }
+    h += `</tbody></table>`;
+    document.getElementById("actions").innerHTML = h;
+  } else {
+    document.getElementById("actions").innerHTML =
+      `<div class="empty">no actions yet</div>`;
+  }
+
+  const t = s.totals || {};
+  document.getElementById("totals").innerHTML =
+      row("open events", t.open_events || 0)
+    + row("realized $", fmt(t.realized_pnl, 3),
+          (t.realized_pnl || 0) >= 0 ? "good" : "bad")
+    + row("open cost $", fmt(t.open_cost_usd, 3))
+    + row("open MtM $", fmt(t.open_mtm_usd, 3))
+    + row("open unrealized $", fmt(t.open_unrealized, 3),
+          (t.open_unrealized || 0) >= 0 ? "good" : "bad");
+}
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
+"""
+
+
+def _moscow_view(weather_state: WeatherAppState | None) -> dict:
+    """Filter the weather snapshot down to Moscow / UUWW for the dashboard."""
+    if weather_state is None:
+        return {"enabled": False, "mode": "idle", "metar": None, "event": None,
+                "buckets": [], "recent_actions": [], "totals": {}, "metar_polls": {}}
+    snap = weather_state.snapshot()
+    moscow_event = next(
+        (e for e in snap["events"] if e["city"].upper() == "MOSCOW" or e["station_id"] == "UUWW"),
+        None,
+    )
+    last_metar = None
+    if moscow_event and moscow_event.get("last_metar"):
+        last_metar = moscow_event["last_metar"]
+    actions = [
+        a for a in snap["recent_actions"]
+        if not moscow_event or a.get("event_slug") == moscow_event["event_slug"]
+    ]
+    return {
+        "enabled": True,
+        "mode": snap.get("mode"),
+        "tick": snap.get("tick"),
+        "metar": last_metar,
+        "event": moscow_event,
+        "buckets": moscow_event["buckets"] if moscow_event else [],
+        "recent_actions": actions,
+        "totals": snap.get("totals", {}),
+        "metar_polls": snap.get("metar_polls", {}),
+    }
+
+
 def make_app(state: AppState, weather_state: WeatherAppState | None = None) -> FastAPI:
     app = FastAPI(title="polyarb")
 
@@ -178,6 +394,14 @@ def make_app(state: AppState, weather_state: WeatherAppState | None = None) -> F
         if weather_state is None:
             return JSONResponse({"enabled": False, "events": []})
         return JSONResponse({"enabled": True, **weather_state.snapshot()})
+
+    @app.get("/moscow", response_class=HTMLResponse)
+    def moscow_page():
+        return HTMLResponse(MOSCOW_HTML)
+
+    @app.get("/moscow.json")
+    def moscow_json():
+        return JSONResponse(_moscow_view(weather_state))
 
     @app.get("/healthz")
     def healthz():
