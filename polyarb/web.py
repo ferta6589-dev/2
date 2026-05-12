@@ -166,33 +166,40 @@ MOSCOW_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0d1117" />
 <title>polyarb · Moscow METAR (UUWW)</title>
 <style>
   :root { color-scheme: dark; }
+  html, body { margin: 0; padding: 0; }
   body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-         background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px; }
-  h1 { margin: 0 0 4px 0; font-size: 18px; }
-  .sub { color: #8b949e; font-size: 12px; margin-bottom: 18px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+         background: #0d1117; color: #c9d1d9;
+         padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom));
+         -webkit-text-size-adjust: 100%; }
+  h1 { margin: 0 0 4px 0; font-size: 17px; line-height: 1.3; }
+  .sub { color: #8b949e; font-size: 12px; margin-bottom: 16px; word-break: break-all; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-          padding: 14px 16px; }
-  .card h2 { font-size: 13px; margin: 0 0 10px 0; color: #58a6ff; font-weight: 600;
+          padding: 12px 14px; min-width: 0; }
+  .card + .card { margin-top: 12px; }
+  .card h2 { font-size: 12px; margin: 0 0 8px 0; color: #58a6ff; font-weight: 600;
              text-transform: uppercase; letter-spacing: 0.5px; }
   .row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0;
          border-bottom: 1px dashed #21262d; font-size: 13px; }
   .row:last-child { border-bottom: 0; }
   .k { color: #8b949e; }
-  .v { font-variant-numeric: tabular-nums; }
+  .v { font-variant-numeric: tabular-nums; text-align: right; }
   .v.good { color: #3fb950; }
   .v.warn { color: #f0883e; }
   .v.bad  { color: #f85149; }
-  .v.big  { font-size: 28px; font-weight: 600; }
+  .v.big  { font-size: 26px; font-weight: 600; }
   pre.metar { background: #010409; border: 1px solid #21262d; border-radius: 6px;
-              padding: 10px; font-size: 12px; color: #79c0ff; white-space: pre-wrap;
-              word-break: break-all; margin: 0; }
+              padding: 10px; font-size: 11px; color: #79c0ff; white-space: pre-wrap;
+              word-break: break-all; margin: 8px 0 0 0; overflow-x: auto; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
   th, td { padding: 5px 8px; border-bottom: 1px solid #21262d; text-align: right;
-           font-variant-numeric: tabular-nums; }
+           font-variant-numeric: tabular-nums; white-space: nowrap; }
   th:first-child, td:first-child { text-align: left; }
   th { color: #8b949e; font-weight: 500; }
   .pill { display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -200,7 +207,16 @@ MOSCOW_HTML = """<!doctype html>
   .pill.leader { background: #1f6feb33; color: #58a6ff; }
   .pill.exceeded { background: #f8514933; color: #f85149; }
   .pill.unreached { background: #30363d; color: #8b949e; }
-  .empty { color: #6e7681; font-style: italic; padding: 12px 0; }
+  .empty { color: #6e7681; font-style: italic; padding: 12px 0; font-size: 12px; }
+
+  @media (max-width: 640px) {
+    body { padding: 12px; }
+    h1 { font-size: 15px; }
+    .grid { grid-template-columns: 1fr; gap: 10px; }
+    .v.big { font-size: 22px; }
+    th, td { padding: 4px 6px; font-size: 11px; }
+    pre.metar { font-size: 10px; }
+  }
 </style>
 </head>
 <body>
@@ -219,17 +235,17 @@ MOSCOW_HTML = """<!doctype html>
     </div>
   </div>
 
-  <div class="card" style="margin-top: 16px;">
-    <h2>Polymarket buckets (May 12, 2026)</h2>
-    <div id="buckets"></div>
+  <div class="card">
+    <h2>Polymarket buckets</h2>
+    <div class="scroll" id="buckets"></div>
   </div>
 
-  <div class="card" style="margin-top: 16px;">
+  <div class="card">
     <h2>Recent bot actions</h2>
-    <div id="actions"></div>
+    <div class="scroll" id="actions"></div>
   </div>
 
-  <div class="card" style="margin-top: 16px;">
+  <div class="card">
     <h2>Bot totals (paper)</h2>
     <div id="totals"></div>
   </div>
