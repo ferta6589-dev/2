@@ -58,38 +58,49 @@ roll, and resets the local orderbook.
 pytest -q
 ```
 
-## Weather strategy (parallel module)
+## Weather strategy — METAR-driven, latency-edge play
 
 `polyarb` ships a second strategy targeting Polymarket's daily city-temperature
-events (e.g. "Highest temperature in NYC on May 7" with buckets `<60°F`,
-`60-65°F`, …, `>75°F`). It is gated behind `WEATHER_ENABLED=false` by default.
+events (e.g. "Highest temperature in Moscow on May 12 2026" with `<11°C`,
+`11-13°C`, … `>23°C` buckets). It is gated behind `WEATHER_ENABLED=false` by
+default.
+
+The core bet is **speed**: Polymarket weather markets resolve from a single
+NOAA-tracked station (e.g. Vnukovo `UUWW` for Moscow, Central Park `KNYC` for
+NYC). The fastest free path to that station's observation is NOAA tgftp:
+
+    https://tgftp.nws.noaa.gov/data/observations/metar/stations/{ICAO}.TXT
+
+That tiny plain-text file is overwritten in place each time a new METAR hits
+NOAA's GTS ingest — typically 30-90 seconds after the airport issues it. We
+poll it every 20 seconds inside the publish window (HH:25-40 / HH:55-10 UTC)
+and every ~3 minutes outside, with `If-Modified-Since` to keep requests cheap.
 
 End-to-end:
 
-1. `weather_markets.fetch_weather_events` discovers daily-temperature events on
-   Polymarket (all cities by default).
-2. `forecast.fetch_distribution` blends NWS + Open-Meteo into a Gaussian
-   forecast for the target date.
-3. `weather_strategy.select_window` chooses the contiguous 3-bucket window
-   with the highest combined probability mass.
-4. `weather_strategy.decide_entry` buys YES on each bucket at best ask, capped
-   by `WEATHER_CENTRAL_MAX_PRICE` / `WEATHER_WING_MAX_PRICE` and a per-event
-   budget (`WEATHER_PER_EVENT_BUDGET_USD`).
-5. On the day-of, `weather_main.monitoring_loop` polls the resolver station's
-   latest observation every `NWS_POLL_INTERVAL_S` (default 30 min) and
-   classifies each bucket as winner / competitor / loser
-   (`weather_strategy.classify_buckets`).
-6. Losers are unwound at best bid; winners are held to resolution.
-7. After `event.end_ts`, a `kind:"resolve"` row credits $1 × qty for the
-   winning bucket.
+1. `weather_markets.fetch_weather_events` discovers daily-temperature events
+   on Polymarket and maps the city to its resolver ICAO via `CITY_RESOLVERS`.
+2. `metar.fetch_metar` pulls the latest report from NOAA tgftp (primary), the
+   per-hour cycles file (fallback), and Ogimet (last resort).
+3. `metar.DailyMaxTracker` accumulates the day's observations and exposes the
+   running max in whole °C (matches resolver precision).
+4. `weather_strategy.classify_buckets` labels each bucket from the running
+   max: `leader` / `exceeded` / `unreached`.
+5. `weather_strategy.decide_entry` buys YES on the **current leader** at best
+   ask (capped by `WEATHER_MAX_PRICE`, sized by
+   `WEATHER_PER_EVENT_BUDGET_USD`). This is the "buy before the order book
+   reprices" play — we act on the fresh METAR before slower traders.
+6. `weather_strategy.decide_exits` sells YES on freshly **exceeded** buckets
+   at best bid to recover capital before they decay to zero.
+7. After `event.end_ts`, the bucket containing the rounded max pays $1.
 
 Run:
 
 ```sh
-# Synthetic feed (no network)
+# Synthetic METAR feed (Moscow / UUWW timeline, no network)
 python -m polyarb.main --strategy weather --demo
 
-# Live discovery against Polymarket (paper-only)
+# Live discovery against Polymarket + real METAR polling (paper-only)
 WEATHER_ENABLED=true python -m polyarb.main --strategy weather
 
 # Both strategies at once with the dashboard
@@ -104,14 +115,13 @@ require `py-clob-client`, USDC/CTF allowance, and signing — deferred to v2.
 
 ## Out of scope (v1)
 
-- **Live execution** — the `Executor` interface is in place, but only
-  `PaperExecutor` / `WeatherPaperExecutor` are implemented. Wiring
-  `py-clob-client` for real orders requires a Polygon private key,
-  USDC + CTF allowance setup, and a careful retry/cancel policy.
+- **Live execution** — only `PaperExecutor` / `WeatherPaperExecutor` are
+  implemented. Wiring `py-clob-client` requires a Polygon private key,
+  USDC + CTF allowance, and a careful retry/cancel policy.
 - **Historical backtest** — Polymarket does not freely publish historical
   orderbook snapshots.
-- **Multi-level VWAP sizing** — the crypto arb detector only sizes against the
-  matched-min of top-of-book asks.
-- **Calibrated forecast σ** — the weather strategy uses a hand-coded σ table
-  (4/3/2 °F at 5/3/0 days). Historical NWS-vs-realised calibration is a v2
-  follow-up.
+- **Sub-30-second METAR feeds** — Synoptic Data's Push Streaming or a direct
+  GTS subscription would beat NOAA tgftp by tens of seconds. Both are paid.
+- **Pre-position on long-range forecast** — the bot now reacts only to live
+  observations. Adding a small pre-event entry on NWS / Open-Meteo forecasts
+  is a follow-up.

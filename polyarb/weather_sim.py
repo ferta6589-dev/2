@@ -1,23 +1,22 @@
-"""Synthetic feed for the weather strategy.
+"""Synthetic METAR + Polymarket feed for tests/demo.
 
-Builds an in-process fake event with seven 5°F buckets, a static forecast
-distribution, and a scripted observation timeline that walks through "below the
-window → in the window → past the window" so we exercise the full classify /
-exit / resolve flow without hitting NWS or Polymarket.
+Walks through a realistic Moscow-on-May-12 trading day at UUWW (Vnukovo): a
+morning low, an afternoon climb that crosses bucket boundaries, and a final
+fix. Each climb step emits a fake METAR, the strategy reacts, and we close
+out with a resolve.
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import structlog
 
 from . import clob_ws
 from .config import Settings
-from .forecast import ForecastDistribution, ObservedNow
+from .metar import DailyMaxTracker, MetarReport
 from .orderbook import OrderBook
 from .weather_executor import WeatherPaperExecutor
 from .weather_markets import WeatherBucket, WeatherEvent
@@ -26,78 +25,61 @@ from .weather_strategy import (
     classify_buckets,
     decide_entry,
     decide_exits,
-    select_window,
 )
 
 log = structlog.get_logger("polyarb.weather_sim")
 
 
-def _build_event(target: date) -> WeatherEvent:
-    starts = [55, 60, 65, 70, 75, 80, 85]
+def _build_moscow_event() -> WeatherEvent:
+    today = datetime.now(timezone.utc).date()
+    starts_c = [11, 13, 15, 17, 19, 21, 23]
     buckets: list[WeatherBucket] = []
-    for i, lo in enumerate(starts):
-        hi = lo + 5
-        slug = f"sim-nyc-{target.isoformat()}-{lo}-{hi}"
+    for lo in starts_c:
+        hi = lo + 2
         buckets.append(WeatherBucket(
-            slug=slug,
-            title=f"Highest temperature in NYC on {target.isoformat()} between {lo} and {hi} degrees",
+            slug=f"sim-moscow-{today.isoformat()}-{lo}-{hi}",
+            title=f"{lo}-{hi}°C",
             token_yes=f"DEMO_YES_{lo}",
             token_no=f"DEMO_NO_{lo}",
-            lo_f=float(lo),
-            hi_f=float(hi),
+            lo_c=float(lo),
+            hi_c=float(hi),
             minimum_order_size=5.0,
-            minimum_tick_size=0.01,
         ))
-    end_ts = datetime.combine(target, datetime.min.time(), tzinfo=timezone.utc).timestamp() + 86400
+    end_ts = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).timestamp() + 86400
     return WeatherEvent(
-        event_slug=f"sim-nyc-weather-{target.isoformat()}",
-        city="NYC",
-        target_date=target,
-        station_id="KNYC",
-        lat=40.78,
-        lon=-73.97,
+        event_slug=f"sim-moscow-weather-{today.isoformat()}",
+        city="MOSCOW",
+        target_date=today,
+        station_id="UUWW",
+        lat=55.59,
+        lon=37.27,
         end_ts=end_ts,
         buckets=buckets,
     )
 
 
 def _seed_books(state: WeatherAppState, event: WeatherEvent) -> None:
-    """Cheap asks on every bucket so decide_entry has something to fill."""
     ts_ms = clob_ws.now_ms()
     for b in event.buckets:
         book = state.books.setdefault(b.token_yes, OrderBook(asset_id=b.token_yes))
-        center = (b.lo_f or 0.0) + 2.5
-        ask_px = max(0.05, min(0.45, 0.45 - abs(center - 70) * 0.05))
+        center = (b.lo_c or 0.0) + 1.0
+        ask_px = max(0.04, min(0.40, 0.40 - abs(center - 17) * 0.05))
         bid_px = max(0.01, ask_px - 0.04)
-        book.replace(
-            bids=[(round(bid_px, 3), 200.0)],
-            asks=[(round(ask_px, 3), 200.0)],
-            ts_ms=ts_ms,
-        )
+        book.replace([(round(bid_px, 3), 250.0)], [(round(ask_px, 3), 250.0)], ts_ms)
 
 
-def _drift_books(state: WeatherAppState, event: WeatherEvent, observed_high: float) -> None:
-    """As the day progresses, push asks of unreachable / exceeded buckets up
-    (so their bids drop, simulating market consensus moving away)."""
+def _drift_books(state: WeatherAppState, event: WeatherEvent, observed_c: float) -> None:
+    """Only drop EXCEEDED buckets toward 0; leave LEADER and UNREACHED at their
+    seed prices. That asymmetry is the very lag the strategy exploits — the
+    market catches up to losers faster than to the new leader."""
     ts_ms = clob_ws.now_ms()
+    truncated = int(observed_c) if observed_c >= 0 else -int(-observed_c // 1)
     for b in event.buckets:
         book = state.books.get(b.token_yes)
         if book is None:
             continue
-        if b.contains(observed_high):
-            ask_px = 0.55
-            bid_px = 0.50
-        elif b.hi_f is not None and b.hi_f < observed_high:
-            ask_px = 0.04
-            bid_px = 0.02
-        else:
-            ask_px = 0.10
-            bid_px = 0.06
-        book.replace(
-            bids=[(round(bid_px, 3), 150.0)],
-            asks=[(round(ask_px, 3), 150.0)],
-            ts_ms=ts_ms,
-        )
+        if b.hi_c is not None and truncated > int(b.hi_c):
+            book.replace([(0.02, 200.0)], [(0.05, 200.0)], ts_ms)
 
 
 async def run_demo(
@@ -106,85 +88,79 @@ async def run_demo(
     executor: WeatherPaperExecutor,
     stop: asyncio.Event,
     *,
-    tick_period_s: float = 0.5,
-    days_ahead: int = 1,
+    tick_period_s: float = 0.3,
 ) -> None:
-    """Runs through entry → classification → exit → resolve in a few seconds."""
+    """One full sim day on Moscow / UUWW."""
     state.mode = "demo"
-    target = (datetime.now(timezone.utc).date() + timedelta(days=days_ahead))
-    event = _build_event(target)
+    event = _build_moscow_event()
     _seed_books(state, event)
+    tracker = DailyMaxTracker(target_date=event.target_date)
+    state.add_event(event, tracker)
 
-    dist = ForecastDistribution(mu_f=72.0, sigma_f=2.0, sources=["demo"])
-    window = select_window(
-        event.buckets,
-        dist,
-        min_window_prob=settings.weather_min_window_prob,
-    )
-    if not window:
-        log.warning("sim_low_confidence")
-        return
-    state.add_event(event, window)
-    state.last_forecast[event.event_slug] = dist
-
-    entries = decide_entry(
-        window,
-        state.books,
-        central_max_price=settings.weather_central_max_price,
-        wing_max_price=settings.weather_wing_max_price,
-        per_event_budget_usd=settings.weather_per_event_budget_usd,
-    )
-    for order in entries:
-        pos = await executor.fill_buy(event.event_slug, order)
-        state.positions[(event.event_slug, order.bucket.slug)] = pos
-
-    timeline: list[tuple[float, float | None]] = [
-        (62.0, 75.0),
-        (66.0, 75.0),
-        (71.0, 73.0),
-        (72.5, 72.5),
-        (72.5, None),
+    base = datetime.combine(event.target_date, datetime.min.time(), tzinfo=timezone.utc)
+    timeline = [
+        (5, 8.5), (7, 10.0), (8, 12.3), (10, 14.8),
+        (12, 16.2), (13, 17.4), (14, 18.1), (15, 18.6),
+        (16, 18.8), (17, 18.3), (18, 17.0), (20, 14.5),
     ]
+    from .weather_strategy import classify_buckets, decide_entry, decide_exits
 
-    for observed_high, remaining_max in timeline:
+    for hour, temp_c in timeline:
         if stop.is_set():
             return
         state.tick += 1
-        _drift_books(state, event, observed_high)
-        state.last_observation[event.event_slug] = ObservedNow(
-            temp_f=observed_high, ts_utc=time.time()
+        observation_ts = base + timedelta(hours=hour)
+        report = MetarReport(
+            station_id="UUWW",
+            observation_ts=observation_ts,
+            temperature_c=temp_c,
+            raw=f"UUWW {observation_ts.strftime('%d%H%M')}Z DEMO",
+            source="sim",
         )
-        if remaining_max is not None:
-            state.last_remaining_max[event.event_slug] = remaining_max
-        else:
-            state.last_remaining_max.pop(event.event_slug, None)
+        tracker.update(report)
+        state.last_metar["UUWW"] = report
+        _drift_books(state, event, tracker.max_c or 0.0)
 
-        verdicts = classify_buckets(
-            window,
-            observed_high_f=observed_high,
-            forecast_remaining_max_f=remaining_max,
-        )
+        verdicts = classify_buckets(event.buckets, observed_max_c=tracker.max_c)
         state.last_verdicts[event.event_slug] = verdicts
 
         positions = [
             (b, state.positions[(event.event_slug, b.slug)].qty)
-            for b in window
+            for b in event.buckets
             if (event.event_slug, b.slug) in state.positions
         ]
-        exits = decide_exits(positions, verdicts, state.books, hold_winner=True)
-        for ex in exits:
-            bucket = next(b for b in window if b.slug == ex.bucket_slug)
+        for ex in decide_exits(positions, verdicts, state.books):
+            bucket = next(b for b in event.buckets if b.slug == ex.bucket_slug)
             await executor.fill_sell(event.event_slug, bucket, ex)
 
+        for order in decide_entry(
+            event.buckets, verdicts, state.books,
+            max_price=settings.weather_max_price,
+            budget_usd=settings.weather_per_event_budget_usd,
+        ):
+            key = (event.event_slug, order.bucket.slug)
+            existing = state.positions.get(key)
+            if existing is not None and existing.qty >= order.qty:
+                continue
+            pos = await executor.fill_buy(event.event_slug, order)
+            state.positions[key] = pos
+
+        log.info(
+            "sim_tick",
+            hour=hour,
+            temp_c=temp_c,
+            max_c=tracker.max_c,
+            rounded_max_c=tracker.rounded_max_c,
+        )
         try:
             await asyncio.wait_for(stop.wait(), timeout=tick_period_s)
         except asyncio.TimeoutError:
             pass
 
-    final_obs = timeline[-1][0]
-    for b in window:
+    rounded = tracker.rounded_max_c or 0
+    for b in event.buckets:
         pos = state.positions.get((event.event_slug, b.slug))
         if pos is None or pos.qty <= 0:
             continue
-        payout = 1.0 if b.contains(final_obs) else 0.0
+        payout = 1.0 if b.contains_rounded(rounded) else 0.0
         await executor.record_resolve(pos, payout_per_share=payout)

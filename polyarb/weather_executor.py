@@ -1,17 +1,10 @@
-"""Execution layer for the weather strategy.
-
-* :class:`WeatherPaperExecutor` writes paper buy/sell/resolve records to a
-  daily-rotated JSONL log and persists positions in an append-only ledger so
-  restarts replay cleanly without double-trading.
-* :class:`WeatherLiveExecutor` is a stub raising ``NotImplementedError`` —
-  v2 will wire ``py-clob-client`` plus USDC/CTF allowance and signing.
-"""
+"""Paper executor for the METAR-driven weather strategy."""
 
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
@@ -66,23 +59,6 @@ class Position:
         return pnl
 
 
-@dataclass
-class _BuyRecord:
-    event_slug: str
-    bucket_slug: str
-    qty: float
-    price: float
-
-
-@dataclass
-class _SellRecord:
-    event_slug: str
-    bucket_slug: str
-    qty: float
-    price: float
-    reason: str
-
-
 class WeatherExecutor(Protocol):
     async def fill_buy(self, event_slug: str, order: EntryOrder) -> Position: ...
     async def fill_sell(self, event_slug: str, bucket: WeatherBucket, order: ExitOrder) -> float: ...
@@ -90,8 +66,6 @@ class WeatherExecutor(Protocol):
 
 
 class WeatherPaperExecutor:
-    """Paper-only executor. Writes JSONL trade log + position ledger."""
-
     def __init__(self, log_dir: Path, *, prefix: str = "weather_trades", state=None):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -117,14 +91,12 @@ class WeatherPaperExecutor:
                 except json.JSONDecodeError:
                     continue
                 key = (rec["event_slug"], rec["bucket_slug"])
-                pos = self.positions.get(key)
-                if pos is None:
-                    pos = Position(
-                        event_slug=rec["event_slug"],
-                        bucket_slug=rec["bucket_slug"],
-                        token_yes=rec.get("token_yes", ""),
-                    )
-                    self.positions[key] = pos
+                pos = self.positions.get(key) or Position(
+                    event_slug=rec["event_slug"],
+                    bucket_slug=rec["bucket_slug"],
+                    token_yes=rec.get("token_yes", ""),
+                )
+                self.positions[key] = pos
                 kind = rec.get("kind")
                 qty = float(rec.get("qty", 0.0))
                 price = float(rec.get("price", 0.0))
@@ -137,16 +109,15 @@ class WeatherPaperExecutor:
                     pos.apply_resolve(price or 1.0)
 
     def _file_for_today(self):
-        date = datetime.now(timezone.utc).strftime("%Y%m%d")
-        if date != self._fp_date:
+        d = datetime.now(timezone.utc).strftime("%Y%m%d")
+        if d != self._fp_date:
             if self._fp is not None:
                 self._fp.close()
-            path = self.log_dir / f"{self.prefix}_{date}.jsonl"
-            self._fp = path.open("a", encoding="utf-8")
-            self._fp_date = date
+            self._fp = (self.log_dir / f"{self.prefix}_{d}.jsonl").open("a", encoding="utf-8")
+            self._fp_date = d
         return self._fp
 
-    def _write_record(self, rec: dict) -> None:
+    def _write(self, rec: dict) -> None:
         fp = self._file_for_today()
         line = json.dumps(rec, separators=(",", ":")) + "\n"
         fp.write(line)
@@ -170,12 +141,12 @@ class WeatherPaperExecutor:
             "event_slug": event_slug,
             "bucket_slug": order.bucket.slug,
             "token_yes": order.bucket.token_yes,
-            "role": order.role,
             "qty": order.qty,
             "price": order.limit_price,
             "cost_basis": pos.avg_cost,
+            "reason": order.reason,
         }
-        self._write_record(rec)
+        self._write(rec)
         if self.state is not None:
             self.state.record_action(rec)
         log.info(
@@ -184,6 +155,7 @@ class WeatherPaperExecutor:
             bucket=order.bucket.slug,
             qty=round(order.qty, 2),
             price=order.limit_price,
+            reason=order.reason,
         )
         return pos
 
@@ -205,7 +177,7 @@ class WeatherPaperExecutor:
             "realized_pnl": realized,
             "reason": order.reason,
         }
-        self._write_record(rec)
+        self._write(rec)
         if self.state is not None:
             self.state.record_action(rec)
         log.info(
@@ -234,7 +206,7 @@ class WeatherPaperExecutor:
             "price": payout_per_share,
             "realized_pnl": realized,
         }
-        self._write_record(rec)
+        self._write(rec)
         if self.state is not None:
             self.state.record_action(rec)
         log.info(
@@ -255,23 +227,18 @@ class WeatherPaperExecutor:
 
 
 class WeatherLiveExecutor:
-    """Live execution stub. v2 will wire ``py-clob-client``.
-
-    Required env: ``POLYGON_PRIVATE_KEY``, ``POLYGON_PROXY_ADDRESS``. Until
-    those are wired, every call raises ``NotImplementedError`` so live mode
-    cannot accidentally trade against the real exchange.
-    """
+    """Live execution stub. v2 will wire ``py-clob-client``."""
 
     def __init__(self, *args, **kwargs):
         raise NotImplementedError(
             "live weather execution not wired; v2: py-clob-client + USDC/CTF allowance + signing"
         )
 
-    async def fill_buy(self, event_slug: str, order: EntryOrder) -> Position:  # pragma: no cover
+    async def fill_buy(self, event_slug, order):  # pragma: no cover
         raise NotImplementedError
 
-    async def fill_sell(self, event_slug: str, bucket: WeatherBucket, order: ExitOrder) -> float:  # pragma: no cover
+    async def fill_sell(self, event_slug, bucket, order):  # pragma: no cover
         raise NotImplementedError
 
-    async def record_resolve(self, position: Position, payout_per_share: float = 1.0) -> float:  # pragma: no cover
+    async def record_resolve(self, position, payout_per_share=1.0):  # pragma: no cover
         raise NotImplementedError

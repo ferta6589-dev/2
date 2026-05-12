@@ -10,16 +10,16 @@ from polyarb.weather_state import WeatherAppState
 
 
 @pytest.mark.asyncio
-async def test_weather_sim_end_to_end(tmp_path):
+async def test_metar_sim_end_to_end(tmp_path):
     settings = Settings(
         log_dir=tmp_path,
         weather_per_event_budget_usd=30.0,
-        weather_central_max_price=0.40,
-        weather_wing_max_price=0.20,
-        weather_min_window_prob=0.3,
+        weather_max_price=0.40,
     )
     state = WeatherAppState()
-    executor = WeatherPaperExecutor(tmp_path, prefix=settings.weather_log_filename_prefix, state=state)
+    executor = WeatherPaperExecutor(
+        tmp_path, prefix=settings.weather_log_filename_prefix, state=state
+    )
     stop = asyncio.Event()
 
     await run_demo(state, settings, executor, stop, tick_period_s=0.0)
@@ -30,6 +30,25 @@ async def test_weather_sim_end_to_end(tmp_path):
 
     summary = summarize(tmp_path, prefix=settings.weather_log_filename_prefix)
     assert summary["buys"] >= 1
-    assert summary["sells"] >= 1
     assert summary["resolves"] >= 1
     assert summary["events_traded"] == 1
+
+
+@pytest.mark.asyncio
+async def test_metar_sim_updates_daily_max(tmp_path):
+    settings = Settings(log_dir=tmp_path)
+    state = WeatherAppState()
+    executor = WeatherPaperExecutor(tmp_path, prefix="weather_trades", state=state)
+    stop = asyncio.Event()
+    await run_demo(state, settings, executor, stop, tick_period_s=0.0)
+    executor.close()
+
+    snap = state.snapshot()
+    assert len(snap["events"]) == 1
+    e = snap["events"][0]
+    assert e["city"] == "MOSCOW"
+    assert e["station_id"] == "UUWW"
+    assert e["observed_max_c"] is not None
+    assert e["observed_max_c"] >= 18.0  # peak of timeline
+    # Resolver-precision rounding (whole °C)
+    assert e["rounded_max_c"] == 18

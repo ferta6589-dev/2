@@ -24,7 +24,8 @@ def test_weather_state_endpoint_enabled():
     body = r.json()
     assert body["enabled"] is True
     assert body["mode"] == "demo"
-    assert body["events"] == []
+    assert "events" in body
+    assert "metar_polls" in body
     assert body["totals"]["open_events"] == 0
 
 

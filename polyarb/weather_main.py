@@ -1,19 +1,25 @@
-"""Three-loop orchestration for the weather strategy.
+"""Orchestration for the METAR-driven weather strategy.
 
-* ``discovery_loop`` — list new daily-temperature events on Polymarket;
-  for each, blend NWS+Open-Meteo into a forecast distribution, pick the best
-  3-bucket window, snapshot books via REST, and submit paper buys.
-* ``ws_loop`` — single multi-asset CLOB WS subscription, restarted whenever
-  ``WeatherAppState.subscribed_tokens`` changes.
-* ``monitoring_loop`` — every ``nws_poll_interval_s`` on the day-of, pull
-  the resolver station's observation + remaining-max forecast, classify the
-  three buckets, sell losers, hold the winner to resolution.
+Four async loops:
+
+* ``discovery_loop`` — finds open Polymarket daily-temperature events, maps
+  each to its resolver ICAO station, REST-snapshots the bucket books, and
+  registers tokens for the WS subscription.
+* ``ws_loop`` — one multi-asset CLOB subscription, restarted on token-set
+  change (same pattern as the crypto path).
+* ``metar_loop`` — per resolver-station, adaptively polls NOAA tgftp.
+  In the **publish window** (HH:25-40 / HH:55-10 UTC) we hit it every
+  ``WEATHER_METAR_FAST_PERIOD_S`` (default 20s); otherwise every
+  ``WEATHER_METAR_SLOW_PERIOD_S`` (default 180s).
+* ``reaction_loop`` — on each fresh METAR, updates the DailyMaxTracker,
+  reclassifies buckets, and submits buys (new leader) / sells (newly
+  exceeded). After ``event.end_ts`` writes a ``resolve`` record.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Iterable
 
 import httpx
@@ -21,28 +27,30 @@ import structlog
 
 from . import clob_ws
 from .config import Settings
-from .forecast import (
-    ForecastDistribution,
-    ObservedNow,
-    fetch_distribution,
-    nws_observation,
-    nws_today_remaining_max,
+from .metar import (
+    DailyMaxTracker,
+    MetarReport,
+    _PollState,
+    fetch_metar,
+    in_publish_window,
+    next_poll_delay,
 )
 from .orderbook import OrderBook
 from .weather_executor import WeatherPaperExecutor
 from .weather_markets import WeatherEvent, fetch_weather_events
 from .weather_state import WeatherAppState
 from .weather_strategy import (
+    Verdict,
     classify_buckets,
     decide_entry,
     decide_exits,
-    select_window,
+    diff_verdicts,
 )
 
 log = structlog.get_logger("polyarb.weather")
 
 
-def _apply_event(state: WeatherAppState, ev: dict) -> bool:
+def _apply_book_event(state: WeatherAppState, ev: dict) -> bool:
     asset_id = ev.get("asset_id") or ev.get("market") or ev.get("assetId")
     if asset_id is None:
         return False
@@ -77,9 +85,7 @@ async def _snapshot_books_rest(
     for tok in tokens:
         try:
             r = await http.get(
-                f"{clob_http_host}/book",
-                params={"token_id": tok},
-                timeout=10.0,
+                f"{clob_http_host}/book", params={"token_id": tok}, timeout=10.0
             )
             r.raise_for_status()
             data = r.json()
@@ -96,12 +102,13 @@ async def discovery_loop(
     state: WeatherAppState,
     settings: Settings,
     http: httpx.AsyncClient,
-    executor: WeatherPaperExecutor,
     stop: asyncio.Event,
 ) -> None:
     while not stop.is_set():
         try:
-            events = await fetch_weather_events(http, settings.gamma_host, settings.weather_cities or None)
+            events = await fetch_weather_events(
+                http, settings.gamma_host, settings.weather_cities or None
+            )
         except Exception as e:  # noqa: BLE001
             log.warning("weather_discovery_failed", err=str(e))
             events = []
@@ -110,52 +117,19 @@ async def discovery_loop(
             if event.event_slug in state.events:
                 continue
             if len(state.events) >= settings.weather_max_open_events:
-                log.info("weather_max_events_reached", n=len(state.events))
                 break
-
-            dist = await fetch_distribution(
-                http,
-                settings.nws_host,
-                settings.open_meteo_host,
-                event.lat,
-                event.lon,
-                event.target_date,
-                user_agent=settings.nws_user_agent,
-                use_open_meteo=settings.open_meteo_enabled,
-            )
-            if dist is None:
-                log.info("weather_no_forecast", event_slug=event.event_slug)
-                continue
-            window = select_window(
-                event.buckets,
-                dist,
-                min_window_prob=settings.weather_min_window_prob,
-            )
-            if not window:
-                log.info(
-                    "weather_low_confidence",
-                    event_slug=event.event_slug,
-                    mu=round(dist.mu_f, 2),
-                    sigma=round(dist.sigma_f, 2),
-                )
-                continue
-
-            state.add_event(event, window)
-            state.last_forecast[event.event_slug] = dist
+            tracker = DailyMaxTracker(target_date=event.target_date)
+            state.add_event(event, tracker)
             await _snapshot_books_rest(
-                http, settings.clob_http_host, [b.token_yes for b in window], state
+                http, settings.clob_http_host, [b.token_yes for b in event.buckets], state
             )
-
-            entries = decide_entry(
-                window,
-                state.books,
-                central_max_price=settings.weather_central_max_price,
-                wing_max_price=settings.weather_wing_max_price,
-                per_event_budget_usd=settings.weather_per_event_budget_usd,
+            log.info(
+                "weather_event_added",
+                event_slug=event.event_slug,
+                city=event.city,
+                station=event.station_id,
+                n_buckets=len(event.buckets),
             )
-            for order in entries:
-                pos = await executor.fill_buy(event.event_slug, order)
-                state.positions[(event.event_slug, order.bucket.slug)] = pos
 
         try:
             await asyncio.wait_for(stop.wait(), timeout=settings.weather_discovery_interval_s)
@@ -172,7 +146,6 @@ async def ws_loop(state: WeatherAppState, settings: Settings, stop: asyncio.Even
                 continue
             state.swap_event.clear()
             continue
-
         active = set(state.subscribed_tokens)
         local_stop = asyncio.Event()
 
@@ -190,7 +163,7 @@ async def ws_loop(state: WeatherAppState, settings: Settings, stop: asyncio.Even
         watcher = asyncio.create_task(watch_swap())
         try:
             async for ev in clob_ws.stream_market(settings.clob_ws_host, list(active), local_stop):
-                _apply_event(state, ev)
+                _apply_book_event(state, ev)
                 if local_stop.is_set() or stop.is_set():
                     break
         finally:
@@ -202,101 +175,148 @@ async def ws_loop(state: WeatherAppState, settings: Settings, stop: asyncio.Even
                 pass
 
 
-async def monitoring_loop(
+async def _process_metar(
     state: WeatherAppState,
     settings: Settings,
-    http: httpx.AsyncClient,
     executor: WeatherPaperExecutor,
-    stop: asyncio.Event,
+    report: MetarReport,
 ) -> None:
-    while not stop.is_set():
-        now = datetime.now(timezone.utc)
-        for event_slug, event in list(state.events.items()):
-            window = state.windows.get(event_slug, [])
-            if not window:
+    """Re-classify all events resolving on this station; fire buys/sells."""
+    for event_slug, event in list(state.events.items()):
+        if event.station_id != report.station_id:
+            continue
+        tracker = state.trackers.setdefault(
+            event_slug, DailyMaxTracker(target_date=event.target_date)
+        )
+        tracker.update(report)
+        prev = state.last_verdicts.get(event_slug, {})
+        curr = classify_buckets(event.buckets, observed_max_c=tracker.max_c)
+        state.last_verdicts[event_slug] = curr
+        changed = diff_verdicts(prev, curr)
+        if changed:
+            log.info(
+                "weather_verdicts_changed",
+                event_slug=event_slug,
+                observed_c=tracker.max_c,
+                rounded_c=tracker.rounded_max_c,
+                changes={k: f"{v[0]}->{v[1]}" for k, v in changed.items()},
+            )
+
+        positions = [
+            (b, state.positions[(event_slug, b.slug)].qty)
+            for b in event.buckets
+            if (event_slug, b.slug) in state.positions
+            and state.positions[(event_slug, b.slug)].qty > 0
+        ]
+        exits = decide_exits(positions, curr, state.books)
+        for ex in exits:
+            bucket = next(b for b in event.buckets if b.slug == ex.bucket_slug)
+            await executor.fill_sell(event_slug, bucket, ex)
+
+        entries = decide_entry(
+            event.buckets, curr, state.books,
+            max_price=settings.weather_max_price,
+            budget_usd=settings.weather_per_event_budget_usd,
+        )
+        for order in entries:
+            key = (event_slug, order.bucket.slug)
+            existing = state.positions.get(key)
+            if existing is not None and existing.qty >= order.qty:
+                continue  # already filled enough
+            pos = await executor.fill_buy(event_slug, order)
+            state.positions[key] = pos
+
+
+async def _resolve_finished_events(
+    state: WeatherAppState,
+    executor: WeatherPaperExecutor,
+) -> None:
+    now = datetime.now(timezone.utc).timestamp()
+    for event_slug, event in list(state.events.items()):
+        if now < event.end_ts:
+            continue
+        tracker = state.trackers.get(event_slug)
+        max_c = tracker.rounded_max_c if tracker else None
+        if max_c is None:
+            continue  # don't resolve without observation
+        for b in event.buckets:
+            pos = state.positions.get((event_slug, b.slug))
+            if pos is None or pos.qty <= 0:
                 continue
-
-            is_day_of = now.date() == event.target_date
-            past_resolution = now.timestamp() >= event.end_ts
-
-            obs: ObservedNow | None = None
-            remaining_max: float | None = None
-            if is_day_of or past_resolution:
-                obs = await nws_observation(
-                    http, settings.nws_host, event.station_id, settings.nws_user_agent
-                )
-                if obs is not None:
-                    state.last_observation[event_slug] = obs
-                if not past_resolution:
-                    remaining_max = await nws_today_remaining_max(
-                        http,
-                        settings.nws_host,
-                        event.lat,
-                        event.lon,
-                        settings.nws_user_agent,
-                        now=now,
-                    )
-                    if remaining_max is not None:
-                        state.last_remaining_max[event_slug] = remaining_max
-
-            verdicts = classify_buckets(
-                window,
-                observed_high_f=(obs.temp_f if obs else None),
-                forecast_remaining_max_f=remaining_max,
-            )
-            state.last_verdicts[event_slug] = verdicts
-
-            positions_iter = (
-                (b, state.positions.get((event_slug, b.slug)).qty)
-                for b in window
-                if state.positions.get((event_slug, b.slug)) is not None
-                and state.positions[(event_slug, b.slug)].qty > 0
-            )
-            exits = decide_exits(
-                ((b, q) for b, q in positions_iter),
-                verdicts,
-                state.books,
-                hold_winner=True,
-            )
-            for ex in exits:
-                bucket = next((b for b in window if b.slug == ex.bucket_slug), None)
-                if bucket is None:
-                    continue
-                await executor.fill_sell(event_slug, bucket, ex)
-
-            if past_resolution:
-                for b in window:
-                    pos = state.positions.get((event_slug, b.slug))
-                    if pos is None or pos.qty <= 0:
-                        continue
-                    payout = 1.0 if verdicts.get(b.slug) == "winner" else 0.0
-                    if verdicts.get(b.slug) is None and obs is not None:
-                        payout = 1.0 if b.contains(obs.temp_f) else 0.0
-                    await executor.record_resolve(pos, payout_per_share=payout)
-                _retire_event(state, event_slug)
-
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=settings.nws_poll_interval_s)
-        except asyncio.TimeoutError:
-            pass
+            payout = 1.0 if b.contains_rounded(max_c) else 0.0
+            await executor.record_resolve(pos, payout_per_share=payout)
+        _retire_event(state, event_slug)
 
 
 def _retire_event(state: WeatherAppState, event_slug: str) -> None:
-    window = state.windows.pop(event_slug, [])
-    state.events.pop(event_slug, None)
-    state.last_forecast.pop(event_slug, None)
-    state.last_observation.pop(event_slug, None)
-    state.last_remaining_max.pop(event_slug, None)
+    event = state.events.pop(event_slug, None)
+    state.trackers.pop(event_slug, None)
     state.last_verdicts.pop(event_slug, None)
-    for b in window:
+    if event is None:
+        return
+    for b in event.buckets:
         still_in_use = any(
-            b.token_yes in (bb.token_yes for bb in w)
-            for w in state.windows.values()
+            b.token_yes in (bb.token_yes for bb in ev.buckets)
+            for ev in state.events.values()
         )
         if not still_in_use:
             state.subscribed_tokens.discard(b.token_yes)
             state.books.pop(b.token_yes, None)
     state.swap_event.set()
+
+
+async def metar_loop(
+    state: WeatherAppState,
+    settings: Settings,
+    executor: WeatherPaperExecutor,
+    http: httpx.AsyncClient,
+    stop: asyncio.Event,
+) -> None:
+    poll_states: dict[str, _PollState] = {}
+    while not stop.is_set():
+        stations = state.stations_in_use()
+        if not stations:
+            try:
+                await asyncio.wait_for(state.swap_event.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                continue
+            state.swap_event.clear()
+            continue
+        in_window = in_publish_window()
+        for station in stations:
+            ps = poll_states.setdefault(station, _PollState())
+            state.metar_poll_count[station] = state.metar_poll_count.get(station, 0) + 1
+            report = await fetch_metar(
+                http,
+                station,
+                state=ps,
+                use_cycle=True,
+                use_ogimet_fallback=settings.weather_ogimet_fallback,
+            )
+            if report is None:
+                continue
+            prev = state.last_metar.get(station)
+            if prev is not None and report.observation_ts <= prev.observation_ts:
+                continue
+            state.last_metar[station] = report
+            log.info(
+                "metar_fresh",
+                station=station,
+                temp_c=report.temperature_c,
+                ts=report.observation_ts.isoformat(),
+                source=report.source,
+            )
+            await _process_metar(state, settings, executor, report)
+        await _resolve_finished_events(state, executor)
+        delay = next_poll_delay(
+            in_window=in_window,
+            fast_period_s=settings.weather_metar_fast_period_s,
+            slow_period_s=settings.weather_metar_slow_period_s,
+        )
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def run(
@@ -308,7 +328,7 @@ async def run(
 ) -> None:
     state.mode = "live"
     await asyncio.gather(
-        discovery_loop(state, settings, http, executor, stop),
+        discovery_loop(state, settings, http, stop),
         ws_loop(state, settings, stop),
-        monitoring_loop(state, settings, http, executor, stop),
+        metar_loop(state, settings, executor, http, stop),
     )

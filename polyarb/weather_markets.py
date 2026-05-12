@@ -1,11 +1,9 @@
-"""Polymarket Gamma discovery for daily city-temperature events.
+"""Polymarket discovery for daily city-temperature events with ICAO resolvers.
 
-Polymarket groups daily weather forecasts as a single Gamma event with several
-binary markets, one per temperature bucket (e.g. "Highest temperature in NYC on
-May 7 between 65 and 70 degrees"). We parse the title/slug of each child market
-into ``(lo_f, hi_f)`` bucket bounds, drop events whose buckets don't form a
-contiguous lattice, and return :class:`WeatherEvent`s ready for the strategy
-loop.
+We map each city to the ICAO weather station Polymarket's resolver actually
+uses (e.g. Moscow → UUWW Vnukovo, NYC → KNYC Central Park). Bucket boundaries
+are parsed in **°C** because Polymarket's international weather markets are
+quoted in Celsius; the °F-only path of the previous strategy is dropped.
 """
 
 from __future__ import annotations
@@ -28,15 +26,15 @@ class WeatherBucket:
     title: str
     token_yes: str
     token_no: str
-    lo_f: float | None
-    hi_f: float | None
+    lo_c: float | None
+    hi_c: float | None
     minimum_order_size: float = 5.0
     minimum_tick_size: float = 0.01
 
-    def contains(self, temp_f: float) -> bool:
-        if self.lo_f is not None and temp_f < self.lo_f:
+    def contains_rounded(self, observed_c: int) -> bool:
+        if self.lo_c is not None and observed_c < int(self.lo_c):
             return False
-        if self.hi_f is not None and temp_f > self.hi_f:
+        if self.hi_c is not None and observed_c > int(self.hi_c):
             return False
         return True
 
@@ -56,7 +54,9 @@ class WeatherEvent:
         return self.end_ts - (now if now is not None else time.time())
 
 
+# (ICAO, lat, lon). lat/lon kept for future use (e.g. forecast pre-positioning).
 CITY_RESOLVERS: dict[str, tuple[str, float, float]] = {
+    "MOSCOW": ("UUWW", 55.59, 37.27),       # Vnukovo
     "NYC": ("KNYC", 40.78, -73.97),
     "NEW YORK": ("KNYC", 40.78, -73.97),
     "LA": ("KCQT", 34.05, -118.24),
@@ -65,7 +65,6 @@ CITY_RESOLVERS: dict[str, tuple[str, float, float]] = {
     "MIAMI": ("KMIA", 25.79, -80.32),
     "AUSTIN": ("KAUS", 30.18, -97.68),
     "PHILADELPHIA": ("KPHL", 39.87, -75.24),
-    "PHILLY": ("KPHL", 39.87, -75.24),
     "DENVER": ("KDEN", 39.85, -104.66),
     "BOSTON": ("KBOS", 42.36, -71.01),
     "ATLANTA": ("KATL", 33.64, -84.43),
@@ -73,11 +72,19 @@ CITY_RESOLVERS: dict[str, tuple[str, float, float]] = {
     "HOUSTON": ("KIAH", 29.99, -95.36),
     "DALLAS": ("KDFW", 32.90, -97.04),
     "PHOENIX": ("KPHX", 33.43, -112.01),
+    "LONDON": ("EGLC", 51.50, 0.05),         # City Airport
+    "BERLIN": ("EDDB", 52.36, 13.50),
+    "PARIS": ("LFPG", 49.01, 2.55),
+    "TOKYO": ("RJTT", 35.55, 139.78),
 }
 
 
-def _c_to_f(c: float) -> float:
-    return c * 9.0 / 5.0 + 32.0
+def _c_to_c(v: float) -> float:
+    return v
+
+
+def _f_to_c(f: float) -> float:
+    return (f - 32.0) * 5.0 / 9.0
 
 
 _RANGE_RE = re.compile(
@@ -94,45 +101,32 @@ _ABOVE_RE = re.compile(
 )
 
 
-def parse_bucket_bounds(text: str) -> tuple[float | None, float | None] | None:
-    """Parse a temperature bucket title into ``(lo_f, hi_f)``.
-
-    Returns ``None`` when no bound can be extracted. An open-ended bucket is
-    represented as ``(None, hi)`` (upper-capped) or ``(lo, None)``.
-    Celsius is converted to Fahrenheit when the unit is explicit.
-    """
+def parse_bucket_bounds(text: str, *, default_unit: str = "C") -> tuple[float | None, float | None] | None:
+    """Parse a bucket title into ``(lo_c, hi_c)``. Honour explicit °F when present."""
     if not text:
         return None
     s = text.strip()
-    is_celsius = bool(re.search(r"°\s*C\b|\bcelsius\b", s, re.IGNORECASE))
+    is_celsius = bool(re.search(r"°\s*C\b|\bcelsius\b", s, re.IGNORECASE)) or default_unit.upper() == "C"
+
+    def _conv(v: float, unit: str) -> float:
+        unit = unit.lower() or ("c" if is_celsius else "f")
+        return v if unit == "c" else _f_to_c(v)
 
     m = _BELOW_RE.search(s)
     if m:
-        hi = float(m.group("hi"))
-        unit = m.group("unit") or ("C" if is_celsius else "F")
-        if unit.lower() == "c":
-            hi = _c_to_f(hi)
-        return (None, hi)
+        return (None, _conv(float(m.group("hi")), m.group("unit") or ""))
 
     m = _ABOVE_RE.search(s)
     if m:
-        lo = float(m.group("lo"))
-        unit = m.group("unit") or ("C" if is_celsius else "F")
-        if unit.lower() == "c":
-            lo = _c_to_f(lo)
-        return (lo, None)
+        return (_conv(float(m.group("lo")), m.group("unit") or ""), None)
 
     m = _RANGE_RE.search(s)
     if m:
-        lo = float(m.group("lo"))
-        hi = float(m.group("hi"))
-        unit = m.group("unit") or ("C" if is_celsius else "F")
-        if unit.lower() == "c":
-            lo, hi = _c_to_f(lo), _c_to_f(hi)
+        lo = _conv(float(m.group("lo")), m.group("unit") or "")
+        hi = _conv(float(m.group("hi")), m.group("unit") or "")
         if lo > hi:
             lo, hi = hi, lo
         return (lo, hi)
-
     return None
 
 
@@ -205,27 +199,49 @@ def _infer_city_and_date(title: str) -> tuple[str | None, date | None]:
     return city, target_date
 
 
-def _resolver_for_city(city_name: str | None) -> tuple[str, str, float, float] | None:
-    if not city_name:
+def _resolver_for_city(city: str | None) -> tuple[str, str, float, float] | None:
+    if not city:
         return None
-    key = city_name.upper().strip()
+    key = city.upper().strip()
     if key in CITY_RESOLVERS:
         sid, lat, lon = CITY_RESOLVERS[key]
         return key, sid, lat, lon
-    for variant in (key.replace("CITY", "").strip(), key.split()[0] if key.split() else ""):
-        if variant and variant in CITY_RESOLVERS:
-            sid, lat, lon = CITY_RESOLVERS[variant]
-            return key, sid, lat, lon
+    first = key.split()[0] if key.split() else ""
+    if first in CITY_RESOLVERS:
+        sid, lat, lon = CITY_RESOLVERS[first]
+        return key, sid, lat, lon
     return None
 
 
+def _bucket_sort_key(b: WeatherBucket) -> float:
+    if b.lo_c is not None:
+        return b.lo_c
+    if b.hi_c is not None:
+        return b.hi_c - 1000.0
+    return 0.0
+
+
+def _is_contiguous(buckets: list[WeatherBucket]) -> bool:
+    sorted_b = sorted(buckets, key=_bucket_sort_key)
+    for i, b in enumerate(sorted_b):
+        if b.lo_c is None and i != 0:
+            return False
+        if b.hi_c is None and i != len(sorted_b) - 1:
+            return False
+    for prev, cur in zip(sorted_b, sorted_b[1:]):
+        if prev.hi_c is None or cur.lo_c is None:
+            return False
+        if abs(prev.hi_c - cur.lo_c) > 0.51:
+            return False
+    return True
+
+
 def _build_event(raw_event: dict, allowed_cities: list[str] | None) -> WeatherEvent | None:
-    title = (raw_event.get("title") or raw_event.get("question") or raw_event.get("slug") or "")
+    title = raw_event.get("title") or raw_event.get("question") or raw_event.get("slug") or ""
     event_slug = raw_event.get("slug") or raw_event.get("id") or title
 
     city, target_date = _infer_city_and_date(title)
     if city is None or target_date is None:
-        log.debug("weather_event_unparseable", slug=event_slug, title=title)
         return None
     if allowed_cities and city.upper() not in {c.upper() for c in allowed_cities}:
         return None
@@ -237,11 +253,10 @@ def _build_event(raw_event: dict, allowed_cities: list[str] | None) -> WeatherEv
     city_key, station_id, lat, lon = resolver
 
     end_iso = (
-        raw_event.get("endDate")
-        or raw_event.get("end_date_iso")
-        or raw_event.get("endDateIso")
+        raw_event.get("endDate") or raw_event.get("end_date_iso") or raw_event.get("endDateIso")
     )
-    end_ts = _iso_to_ts(end_iso) if end_iso else (
+    end_ts = (
+        _iso_to_ts(end_iso) if end_iso else
         datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc).timestamp() + 86400
     )
 
@@ -257,20 +272,19 @@ def _build_event(raw_event: dict, allowed_cities: list[str] | None) -> WeatherEv
         tokens = _yes_no_tokens(m)
         if tokens is None:
             continue
-        lo_f, hi_f = bounds
+        lo_c, hi_c = bounds
         buckets.append(WeatherBucket(
             slug=str(m.get("slug") or m.get("id") or title_or_slug),
             title=title_or_slug,
             token_yes=tokens[0],
             token_no=tokens[1],
-            lo_f=lo_f,
-            hi_f=hi_f,
+            lo_c=lo_c,
+            hi_c=hi_c,
             minimum_order_size=float(m.get("orderMinSize") or m.get("minimum_order_size") or 5.0),
             minimum_tick_size=float(m.get("orderPriceMinTickSize") or m.get("minimum_tick_size") or 0.01),
         ))
 
     if len(buckets) < 3:
-        log.info("weather_event_too_few_buckets", slug=event_slug, n=len(buckets))
         return None
     if not _is_contiguous(buckets):
         log.info("weather_event_non_contiguous", slug=event_slug)
@@ -288,41 +302,12 @@ def _build_event(raw_event: dict, allowed_cities: list[str] | None) -> WeatherEv
     )
 
 
-def _bucket_sort_key(b: WeatherBucket) -> float:
-    if b.lo_f is not None:
-        return b.lo_f
-    if b.hi_f is not None:
-        return b.hi_f - 1000.0
-    return 0.0
-
-
-def _is_contiguous(buckets: list[WeatherBucket]) -> bool:
-    """Buckets must tile a temperature range with no gaps. Open-ended buckets
-    are allowed at either end and only at either end."""
-    sorted_b = sorted(buckets, key=_bucket_sort_key)
-    for i, b in enumerate(sorted_b):
-        if b.lo_f is None and i != 0:
-            return False
-        if b.hi_f is None and i != len(sorted_b) - 1:
-            return False
-    for prev, cur in zip(sorted_b, sorted_b[1:]):
-        if prev.hi_f is None or cur.lo_f is None:
-            return False
-        if abs(prev.hi_f - cur.lo_f) > 0.51:
-            return False
-    return True
-
-
 async def fetch_weather_events(
     client: httpx.AsyncClient,
     gamma_host: str,
     cities: list[str] | None,
     target_date: date | None = None,
 ) -> list[WeatherEvent]:
-    """Fetch all open daily-temperature events from Gamma.
-
-    Empty ``cities`` means auto-discover all known resolver cities.
-    """
     params = {
         "tag_slug": "weather",
         "closed": "false",
@@ -337,7 +322,6 @@ async def fetch_weather_events(
         return []
     raw = r.json()
     events_raw = raw if isinstance(raw, list) else raw.get("events") or []
-
     allowed = list(cities) if cities else None
     out: list[WeatherEvent] = []
     for ev in events_raw:
