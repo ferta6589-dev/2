@@ -22,6 +22,8 @@ class WeatherAppState:
         self.last_metar: dict[str, MetarReport] = {}        # by station_id
         self.last_verdicts: dict[str, dict[str, Verdict]] = {}
         self.metar_poll_count: dict[str, int] = {}          # by station_id
+        self.last_pair: dict[str, dict] = {}                # by event_slug
+        self.last_pair_skip: dict[str, dict] = {}           # by event_slug
         self.recent_actions: Deque[dict] = deque(maxlen=max_actions)
         self.subscribed_tokens: set[str] = set()
         self.swap_event: asyncio.Event = asyncio.Event()

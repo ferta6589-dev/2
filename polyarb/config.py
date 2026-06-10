@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     weather_metar_fast_period_s: int = 20
     weather_metar_slow_period_s: int = 180
     weather_ogimet_fallback: bool = False
+
+    # --- 2-bucket forecast pre-entry ---
+    weather_pair_entry_enabled: bool = True
+    weather_open_meteo_host: str = "https://api.open-meteo.com"
+    weather_ensemble_host: str = "https://ensemble-api.open-meteo.com"
+    weather_max_sigma_c: float = 1.2          # skip events with higher uncertainty
+    weather_min_pair_prob: float = 0.90       # only enter if combined P(pair) ≥ this
+    weather_pair_primary_max_price: float = 0.45
+    weather_pair_secondary_max_price: float = 0.25
+    weather_pair_primary_budget_share: float = 0.6
+    weather_pair_lead_days_max: int = 3       # don't pre-enter > N days before resolution
     weather_live_enabled: bool = False
     polygon_private_key: str | None = None
     polygon_proxy_address: str | None = None

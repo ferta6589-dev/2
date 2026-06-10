@@ -27,6 +27,12 @@ import structlog
 
 from . import clob_ws
 from .config import Settings
+from .forecast import fetch_distribution
+from .two_bucket_strategy import (
+    decide_pair_entry,
+    explain_pair,
+    select_best_pair,
+)
 from .metar import (
     DailyMaxTracker,
     MetarReport,
@@ -102,6 +108,7 @@ async def discovery_loop(
     state: WeatherAppState,
     settings: Settings,
     http: httpx.AsyncClient,
+    executor,
     stop: asyncio.Event,
 ) -> None:
     while not stop.is_set():
@@ -131,10 +138,91 @@ async def discovery_loop(
                 n_buckets=len(event.buckets),
             )
 
+            if settings.weather_pair_entry_enabled:
+                await _try_pair_entry(state, settings, http, executor, event)
+
         try:
             await asyncio.wait_for(stop.wait(), timeout=settings.weather_discovery_interval_s)
         except asyncio.TimeoutError:
             pass
+
+
+async def _try_pair_entry(
+    state: WeatherAppState,
+    settings: Settings,
+    http: httpx.AsyncClient,
+    executor,
+    event,
+) -> None:
+    """Pre-entry: 2-bucket forecast strategy gated by >= weather_min_pair_prob."""
+    lead_days = (event.target_date - datetime.now(timezone.utc).date()).days
+    if lead_days < 0 or lead_days > settings.weather_pair_lead_days_max:
+        log.info("pair_skip_lead_days", event_slug=event.event_slug, lead_days=lead_days)
+        return
+
+    dist = await fetch_distribution(
+        http,
+        settings.weather_open_meteo_host,
+        settings.weather_ensemble_host,
+        event.lat,
+        event.lon,
+        event.target_date,
+    )
+    if dist is None:
+        log.info("pair_skip_no_forecast", event_slug=event.event_slug)
+        return
+
+    if dist.sigma_c > settings.weather_max_sigma_c:
+        log.info(
+            "pair_skip_low_confidence",
+            event_slug=event.event_slug,
+            sigma_c=round(dist.sigma_c, 2),
+            max_sigma=settings.weather_max_sigma_c,
+        )
+        state.last_pair_skip[event.event_slug] = {
+            "reason": "sigma_too_high",
+            "sigma_c": dist.sigma_c,
+        }
+        return
+
+    pair = select_best_pair(
+        event.buckets,
+        dist,
+        min_combined_prob=settings.weather_min_pair_prob,
+        max_sigma_c=settings.weather_max_sigma_c,
+    )
+    if pair is None:
+        log.info("pair_skip_no_qualifying_pair", event_slug=event.event_slug)
+        return
+
+    state.last_pair[event.event_slug] = explain_pair(pair, dist)
+    orders = decide_pair_entry(
+        pair,
+        state.books,
+        primary_max_price=settings.weather_pair_primary_max_price,
+        secondary_max_price=settings.weather_pair_secondary_max_price,
+        budget_usd=settings.weather_per_event_budget_usd,
+        primary_budget_share=settings.weather_pair_primary_budget_share,
+    )
+    for order in orders:
+        from .weather_strategy import EntryOrder as ReactEntry
+        react_order = ReactEntry(
+            bucket=order.bucket,
+            qty=order.qty,
+            limit_price=order.limit_price,
+            reason=order.reason,
+        )
+        pos = await executor.fill_buy(event.event_slug, react_order)
+        state.positions[(event.event_slug, order.bucket.slug)] = pos
+        log.info(
+            "pair_entry_filled",
+            event_slug=event.event_slug,
+            bucket=order.bucket.slug,
+            role=order.role,
+            qty=round(order.qty, 2),
+            price=order.limit_price,
+            combined_prob=round(pair.combined_prob, 3),
+        )
 
 
 async def ws_loop(state: WeatherAppState, settings: Settings, stop: asyncio.Event) -> None:
@@ -328,7 +416,7 @@ async def run(
 ) -> None:
     state.mode = "live"
     await asyncio.gather(
-        discovery_loop(state, settings, http, stop),
+        discovery_loop(state, settings, http, executor, stop),
         ws_loop(state, settings, stop),
         metar_loop(state, settings, executor, http, stop),
     )
