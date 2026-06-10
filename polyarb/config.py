@@ -36,8 +36,10 @@ class Settings(BaseSettings):
     weather_pair_entry_enabled: bool = True
     weather_open_meteo_host: str = "https://api.open-meteo.com"
     weather_ensemble_host: str = "https://ensemble-api.open-meteo.com"
-    weather_max_sigma_c: float = 1.2          # skip events with higher uncertainty
-    weather_min_pair_prob: float = 0.90       # only enter if combined P(pair) ≥ this
+    # Robust gate: Monte-Carlo shows σ≤1.0 / prob≥0.92 keeps realised hit-rate
+    # ≥ 91% even when the ensemble is 25% under-dispersive (see backtest.py).
+    weather_max_sigma_c: float = 1.0          # skip events with higher uncertainty
+    weather_min_pair_prob: float = 0.92       # only enter if combined P(pair) ≥ this
     weather_pair_primary_max_price: float = 0.45
     weather_pair_secondary_max_price: float = 0.25
     weather_pair_primary_budget_share: float = 0.6
