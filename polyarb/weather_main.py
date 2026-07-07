@@ -314,6 +314,124 @@ async def _process_metar(
             pos = await executor.fill_buy(event_slug, order)
             state.positions[key] = pos
 
+        # --- L2: peak-lock. If the diurnal peak has passed, the winner is
+        # near-certain hours before resolution — buy it aggressively, dump rest.
+        if settings.weather_peak_lock_enabled:
+            await _apply_peak_lock(state, settings, executor, event, tracker, report)
+
+        # --- L0: coherence / dutch-book arb (risk-free, no weather view).
+        if settings.weather_coherence_enabled:
+            await _apply_coherence(state, settings, executor, event)
+
+
+async def _apply_peak_lock(
+    state: WeatherAppState,
+    settings: Settings,
+    executor: WeatherPaperExecutor,
+    event,
+    tracker,
+    report: MetarReport,
+) -> None:
+    """When the day's peak is locked, take the winner cheap and dump the rest."""
+    from .peak_detection import PeakTracker
+    from .weather_strategy import EntryOrder, ExitOrder
+
+    pk = state.peak_trackers.get(event.event_slug)
+    if pk is None:
+        pk = PeakTracker(lat=event.lat, lon=event.lon, target_date=event.target_date)
+        state.peak_trackers[event.event_slug] = pk
+    pk.add(report.observation_ts, report.temperature_c)
+
+    sig = pk.evaluate(
+        event.buckets,
+        now=datetime.now(timezone.utc),
+        forecast_remaining_max_c=state.last_remaining_max.get(event.station_id),
+        lock_threshold=settings.weather_peak_lock_threshold,
+    )
+    state.last_peak[event.event_slug] = {
+        "locked": sig.locked,
+        "confidence": sig.confidence,
+        "winner_slug": sig.winner_slug,
+        "observed_max_c": sig.observed_max_c,
+    }
+    if not sig.locked or sig.winner_slug is None:
+        return
+
+    winner = next((b for b in event.buckets if b.slug == sig.winner_slug), None)
+    if winner is None:
+        return
+
+    # Buy the locked winner up to the aggressive cap.
+    book = state.books.get(winner.token_yes)
+    ask = book.best_ask() if book else None
+    key = (event.event_slug, winner.slug)
+    have = state.positions.get(key)
+    if ask is not None and ask.price <= settings.weather_peak_lock_max_price:
+        qty = min(ask.size, settings.weather_per_event_budget_usd / max(ask.price, 1e-6))
+        if (have is None or have.qty < qty) and qty >= winner.minimum_order_size:
+            order = EntryOrder(
+                bucket=winner, qty=qty, limit_price=ask.price,
+                reason=f"peak_lock_c{sig.confidence}",
+            )
+            pos = await executor.fill_buy(event.event_slug, order)
+            state.positions[key] = pos
+            log.info("peak_lock_buy", event_slug=event.event_slug,
+                     bucket=winner.slug, price=ask.price, conf=sig.confidence)
+
+    # Dump every non-winner we still hold — they are now dead.
+    for b in event.buckets:
+        if b.slug == winner.slug:
+            continue
+        pos = state.positions.get((event.event_slug, b.slug))
+        if pos is None or pos.qty <= 0:
+            continue
+        bk = state.books.get(b.token_yes)
+        bid = bk.best_bid() if bk else None
+        limit = round(max(0.01, bid.price if bid else 0.01), 4)
+        await executor.fill_sell(
+            event.event_slug, b,
+            ExitOrder(bucket_slug=b.slug, qty=pos.qty, limit_price=limit,
+                      reason="peak_lock_dump"),
+        )
+
+
+async def _apply_coherence(
+    state: WeatherAppState,
+    settings: Settings,
+    executor: WeatherPaperExecutor,
+    event,
+) -> None:
+    """L0 risk-free arb: buy every bucket when ask-sum < $1 - fee wedge."""
+    from .coherence import detect_dutch_book
+    from .weather_strategy import EntryOrder
+
+    arb = detect_dutch_book(
+        event.buckets, state.books,
+        fee_wedge=settings.weather_coherence_fee_wedge,
+        min_profit_usd=settings.weather_coherence_min_profit_usd,
+        max_set_cost_usd=settings.weather_per_event_budget_usd,
+    )
+    if arb is None:
+        return
+    log.info("coherence_arb", event_slug=event.event_slug,
+             price_sum=arb.price_sum, edge=arb.edge_per_share,
+             profit=arb.profit_usd, size=arb.matched_size)
+    state.record_action({
+        "kind": "coherence_arb", "event_slug": event.event_slug,
+        "price_sum": arb.price_sum, "edge": arb.edge_per_share,
+        "profit_usd": arb.profit_usd, "size": arb.matched_size,
+    })
+    for leg in arb.legs:
+        bucket = next((b for b in event.buckets if b.slug == leg.bucket_slug), None)
+        if bucket is None:
+            continue
+        order = EntryOrder(
+            bucket=bucket, qty=arb.matched_size, limit_price=leg.price,
+            reason=f"coherence_sum{arb.price_sum}",
+        )
+        pos = await executor.fill_buy(event.event_slug, order)
+        state.positions[(event.event_slug, bucket.slug)] = pos
+
 
 async def _resolve_finished_events(
     state: WeatherAppState,
